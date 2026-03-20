@@ -949,10 +949,10 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
         updatePayload['map_geojson'] = outerBoundaryJson;
       }
 
-      await context.read<SupabaseService>().updateProperty(
-            widget.property.id,
-            updatePayload,
-          );
+      await _saveSetupWithFallback(
+        outerBoundaryJson: outerBoundaryJson,
+        fullPayload: updatePayload,
+      );
 
       await widget.onSaved();
       if (!mounted) return;
@@ -970,6 +970,58 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
         setState(() => _isSaving = false);
       }
     }
+  }
+
+  Future<void> _saveSetupWithFallback({
+    required Map<String, dynamic> outerBoundaryJson,
+    required Map<String, dynamic> fullPayload,
+  }) async {
+    final supabase = context.read<SupabaseService>();
+
+    try {
+      await supabase.updateProperty(widget.property.id, fullPayload);
+      return;
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      final likelySchemaMismatch =
+          msg.contains('column') || msg.contains('does not exist') || msg.contains("could not find");
+
+      if (!likelySchemaMismatch) {
+        rethrow;
+      }
+    }
+
+    final fallbackPayloads = <Map<String, dynamic>>[
+      {
+        'outer_boundary': outerBoundaryJson,
+        'exclusion_zones': fullPayload['exclusion_zones'],
+        'map_geojson': outerBoundaryJson,
+      },
+      {
+        'outer_boundary': outerBoundaryJson,
+        'map_geojson': outerBoundaryJson,
+      },
+      {
+        'map_geojson': outerBoundaryJson,
+      },
+    ];
+
+    for (final payload in fallbackPayloads) {
+      try {
+        await supabase.updateProperty(widget.property.id, payload);
+        if (mounted) {
+          _showSnack(
+            'Boundary saved with compatibility mode. Some zone fields may need a DB migration.',
+            color: Colors.orange.shade800,
+          );
+        }
+        return;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    throw Exception('Could not save any boundary payload to the backend');
   }
 
   Map<String, dynamic> _toGeoJsonPolygon(
