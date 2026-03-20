@@ -577,25 +577,57 @@ class SupabaseService {
     double? chemicalCostPerUnit,
     double? overlapThreshold,
   }) async {
+    final fullPayload = {
+      'property_id': propertyId,
+      'user_id': userId,
+      'start_time': DateTime.now().toIso8601String(),
+      'paths': [],
+      'coverage_percent': null,
+      'proof_pdf_url': null,
+      'tank_capacity_gallons': tankCapacityGallons,
+      'application_rate_per_acre': applicationRatePerAcre,
+      'application_rate_unit': applicationRateUnit,
+      'chemical_cost_per_unit': chemicalCostPerUnit,
+      'overlap_threshold': overlapThreshold,
+      'created_at': DateTime.now().toIso8601String(),
+    };
+
+    final fallbackPayload = {
+      'property_id': propertyId,
+      'user_id': userId,
+      'start_time': DateTime.now().toIso8601String(),
+      'paths': [],
+      'coverage_percent': null,
+      'proof_pdf_url': null,
+      'created_at': DateTime.now().toIso8601String(),
+    };
+
     try {
-      final response = await _client.from('tracking_sessions').insert({
-        'property_id': propertyId,
-        'user_id': userId,
-        'start_time': DateTime.now().toIso8601String(),
-        'paths': [],
-        'coverage_percent': null,
-        'proof_pdf_url': null,
-        'tank_capacity_gallons': tankCapacityGallons,
-        'application_rate_per_acre': applicationRatePerAcre,
-        'application_rate_unit': applicationRateUnit,
-        'chemical_cost_per_unit': chemicalCostPerUnit,
-        'overlap_threshold': overlapThreshold,
-        'created_at': DateTime.now().toIso8601String(),
-      }).select();
+      final response =
+          await _client.from('tracking_sessions').insert(fullPayload).select();
 
       _logger.i('Tracking session created');
       return response[0]['id'] as String;
     } catch (e) {
+      final msg = e.toString().toLowerCase();
+      final likelySchemaMismatch =
+          msg.contains('column') || msg.contains('does not exist') || msg.contains("could not find");
+
+      if (likelySchemaMismatch) {
+        try {
+          final response = await _client
+              .from('tracking_sessions')
+              .insert(fallbackPayload)
+              .select();
+          _logger.w(
+            'Tracking session created with fallback payload due to schema mismatch',
+          );
+          return response[0]['id'] as String;
+        } catch (fallbackError) {
+          _logger.e('Create tracking session fallback error: $fallbackError');
+        }
+      }
+
       _logger.e('Create tracking session error: $e');
       rethrow;
     }
