@@ -34,5 +34,14 @@ class LocalStorageService {
 
   String getThemeMode() => _prefs.getString('theme_mode') ?? 'system';
 
+    Future<void> setOnboardingDismissed(String userId, bool dismissed) =>
+      _prefs.setBool('onboarding_dismissed_$userId', dismissed);
+
+    bool isOnboardingDismissed(String userId) =>
+      _prefs.getBool('onboarding_dismissed_$userId') ?? false;
+
+    Future<void> clearOnboardingDismissed(String userId) =>
+      _prefs.remove('onboarding_dismissed_$userId');
+
   Future<void> clearAll() => _prefs.clear();
 }

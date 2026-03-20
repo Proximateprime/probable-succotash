@@ -10,6 +10,7 @@ import '../models/property_model.dart';
 import '../models/session_model.dart';
 import '../models/user_model.dart';
 import '../services/supabase_service.dart';
+import '../utils/local_storage_service.dart';
 import '../utils/theme_controller.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/dashboard_widgets.dart';
@@ -56,6 +57,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       final profile = await supabase.ensureCurrentUserProfile();
+      final localStorage = context.read<LocalStorageService>();
+      final onboardingDismissed = localStorage.isOnboardingDismissed(userId);
       final properties = await supabase.fetchUserProperties(
         userId,
         userRole: profile?.role ?? 'hobbyist',
@@ -77,7 +80,7 @@ class _HomeScreenState extends State<HomeScreen> {
       });
 
       // Show onboarding if first_login is true
-      if (profile?.firstLogin == true && mounted) {
+      if (profile?.firstLogin == true && !onboardingDismissed && mounted) {
         Future.microtask(() {
           _showOnboarding();
         });

@@ -21,6 +21,7 @@ import '../models/user_model.dart';
 import '../services/offline_session_service.dart';
 import '../services/supabase_service.dart';
 import '../services/weather_service.dart';
+import '../utils/local_storage_service.dart';
 import '../utils/theme_controller.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/dashboard_widgets.dart';
@@ -179,6 +180,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
       await supabase.syncCurrentUserActiveMapsCount();
 
       final profile = await supabase.ensureCurrentUserProfile();
+      final localStorage = context.read<LocalStorageService>();
+      final onboardingDismissed = localStorage.isOnboardingDismissed(userId);
       final role = (profile?.role ?? 'hobbyist').toLowerCase();
       final properties = await supabase.fetchUserProperties(
         userId,
@@ -217,7 +220,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
         _isLoading = false;
       });
 
-      if (profile?.firstLogin == true && mounted) {
+      if (profile?.firstLogin == true && !onboardingDismissed && mounted) {
         Future.microtask(() {
           _showOnboarding();
         });

@@ -6,6 +6,7 @@ import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
 
 import '../services/supabase_service.dart';
+import '../utils/local_storage_service.dart';
 import '../widgets/app_ui.dart';
 
 final _onboardingLog = Logger();
@@ -280,16 +281,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _markComplete() async {
     setState(() => _isSaving = true);
+    final supabase = context.read<SupabaseService>();
+    final localStorage = context.read<LocalStorageService>();
+    final userId = supabase.currentUserId;
+
     try {
-      await context.read<SupabaseService>().markFirstLoginComplete();
+      if (userId != null) {
+        await localStorage.setOnboardingDismissed(userId, true);
+      }
+
+      await supabase.markFirstLoginComplete();
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       _onboardingLog.e('Onboarding completion error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          AppSnackBar.error('Could not save progress. Please try again.'),
+          AppSnackBar.info(
+            'Guide saved on this device. Profile sync for this step can be fixed later.',
+          ),
         );
-        setState(() => _isSaving = false);
+        Navigator.of(context).pop();
       }
     }
   }
