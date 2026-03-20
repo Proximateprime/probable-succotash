@@ -1,0 +1,52 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "web: quick test",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ".\\tools\\run_flutter_web.ps1"
+      ],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "web: quick test (Edge)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ".\\tools\\run_flutter_web.ps1",
+        "-Device",
+        "edge"
+      ],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "web: build cloudflare",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ".\\tools\\build_cloudflare_web.ps1"
+      ],
+      "isBackground": false,
+      "problemMatcher": []
+    },
+    {
+      "label": "noop",
+      "type": "shell",
+      "command": "echo noop",
+      "isBackground": false
+    }
+  ]
+}
