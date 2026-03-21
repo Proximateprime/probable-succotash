@@ -3,6 +3,7 @@ import 'package:logger/logger.dart';
 import '../models/user_model.dart';
 import '../models/property_model.dart';
 import '../models/session_model.dart';
+
 class MapLimitCheckResult {
   const MapLimitCheckResult({
     required this.allowed,
@@ -18,7 +19,6 @@ class MapLimitCheckResult {
   final String tier;
   final String message;
 }
-
 
 class SupabaseService {
   static final SupabaseService _instance = SupabaseService._internal();
@@ -141,6 +141,7 @@ class SupabaseService {
         'active_maps_count': 0,
         'overlap_threshold': 25,
         'first_login': true,
+        'has_seen_onboarding': true,
         'created_at': DateTime.now().toIso8601String(),
       });
       _logger.i('User profile created: $userId');
@@ -293,10 +294,27 @@ class SupabaseService {
     try {
       await _client.from('profiles').update({
         'first_login': false,
+        'has_seen_onboarding': false,
       }).eq('id', currentUserId!);
       _logger.i('Marked first login complete for user: $currentUserId');
     } catch (e) {
       _logger.e('Mark first login complete error: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> updateHasSeenOnboarding(bool shouldShow) async {
+    if (currentUserId == null) {
+      throw Exception('No authenticated user');
+    }
+
+    try {
+      await _client.from('profiles').update({
+        'has_seen_onboarding': shouldShow,
+      }).eq('id', currentUserId!);
+      _logger.i('Updated has_seen_onboarding to: $shouldShow');
+    } catch (e) {
+      _logger.e('Update has_seen_onboarding error: $e');
       rethrow;
     }
   }
@@ -351,14 +369,12 @@ class SupabaseService {
       final mappedProperties = await _client
           .from('properties')
           .select('id')
-          .eq('owner_id', currentUserId!)
-          ;
+          .eq('owner_id', currentUserId!);
 
       final propertyCount = (mappedProperties as List).length;
 
-      await _client
-          .from('profiles')
-          .update({'active_maps_count': propertyCount}).eq('id', currentUserId!);
+      await _client.from('profiles').update(
+          {'active_maps_count': propertyCount}).eq('id', currentUserId!);
 
       return propertyCount;
     } catch (e) {
@@ -367,53 +383,130 @@ class SupabaseService {
     }
   }
 
-
-  Future<MapLimitCheckResult> checkCurrentUserMapLimit() async {
-    if (currentUserId == null) {
+  Future<MapLimitCheckResult> checkUserCanAddMap({
+    String? userId,
+    bool refreshCount = false,
+  }) async {
+    final effectiveUserId = userId ?? currentUserId;
+    if (effectiveUserId == null) {
       throw Exception('No authenticated user');
     }
 
-    try {
-      final response = await _client.rpc('check_map_limit');
-      final rows = response as List<dynamic>;
-      if (rows.isNotEmpty && rows.first is Map<String, dynamic>) {
-        final row = rows.first as Map<String, dynamic>;
-        final result = MapLimitCheckResult(
-          allowed: row['allowed'] as bool? ?? false,
-          activeCount: (row['active_count'] as num?)?.toInt() ?? 0,
-          maxMaps: (row['max_maps'] as num?)?.toInt() ?? 1,
-          tier: row['tier']?.toString() ?? 'hobbyist',
-          message: row['message']?.toString() ?? 'Map limit check completed.',
-        );
+    if (refreshCount && effectiveUserId == currentUserId) {
+      await syncCurrentUserActiveMapsCount();
+    }
 
-        _logger.i(
-          'Map-limit check: count=${result.activeCount}, limit=${result.maxMaps}, tier=${result.tier}, allowed=${result.allowed}',
-        );
-        return result;
+    try {
+      final response = await _client.rpc(
+        'check_user_can_add_map',
+        params: {'user_id': effectiveUserId},
+      );
+      final parsed = _parseMapLimitRpcResponse(response);
+      if (parsed != null) {
+        _logMapLimitSnapshot(parsed);
+        return parsed;
       }
       throw Exception('Empty map-limit response');
     } catch (e) {
-      // Fallback to profile snapshot if RPC is not yet deployed.
-      final profile = await fetchCurrentUserProfile();
+      if (effectiveUserId == currentUserId) {
+        try {
+          final legacyResponse = await _client.rpc('check_map_limit');
+          final parsed = _parseMapLimitRpcResponse(legacyResponse);
+          if (parsed != null) {
+            _logMapLimitSnapshot(parsed);
+            return parsed;
+          }
+        } catch (_) {
+          // Fall through to profile snapshot fallback.
+        }
+      }
+
+      final profile = effectiveUserId == currentUserId
+          ? await fetchCurrentUserProfile()
+          : await fetchUserProfile(effectiveUserId);
       if (profile == null) {
         throw Exception('Unable to validate map limits.');
       }
 
+      final propertyRows = await _client
+          .from('properties')
+          .select('id')
+          .eq('owner_id', effectiveUserId);
+
+      final currentCount = (propertyRows as List).length;
       final max = profile.getMaxMaps();
-      final allowed = max < 0 ? true : profile.activeMapsCount < max;
+      final allowed = max < 0 ? true : currentCount < max;
+      final limitLabel = max < 0 ? 'Unlimited' : '$max';
+
+      if (effectiveUserId == currentUserId) {
+        await _client
+            .from('profiles')
+            .update({'active_maps_count': currentCount}).eq('id', effectiveUserId);
+      }
+
       final result = MapLimitCheckResult(
         allowed: allowed,
-        activeCount: profile.activeMapsCount,
+        activeCount: currentCount,
         maxMaps: max,
-        tier: profile.tier,
-        message: allowed ? 'Map available.' : 'Max maps reached - upgrade?',
+        tier: UserProfile.normalizeTierValue(profile.tier),
+        message: allowed
+            ? 'Map available ($currentCount/$limitLabel).'
+            : 'Max maps reached for your tier - upgrade?',
       );
-      _logger.i(
-        'Map-limit fallback check: count=${result.activeCount}, limit=${result.maxMaps}, tier=${result.tier}, allowed=${result.allowed}',
-      );
+      _logMapLimitSnapshot(result);
       return result;
     }
   }
+
+  Future<MapLimitCheckResult> checkCurrentUserMapLimit() async {
+    return checkUserCanAddMap(refreshCount: true);
+  }
+
+  MapLimitCheckResult? _parseMapLimitRpcResponse(dynamic response) {
+    Map<String, dynamic>? row;
+
+    if (response is List && response.isNotEmpty) {
+      final first = response.first;
+      if (first is Map) {
+        row = Map<String, dynamic>.from(first);
+      }
+    } else if (response is Map) {
+      row = Map<String, dynamic>.from(response);
+    }
+
+    if (row == null) return null;
+
+    final activeCount = (row['current_count'] as num?)?.toInt() ??
+        (row['active_count'] as num?)?.toInt() ??
+        (row['active_maps_count'] as num?)?.toInt() ??
+        0;
+    final maxMaps = (row['max_limit'] as num?)?.toInt() ??
+        (row['max_maps'] as num?)?.toInt() ??
+        1;
+    final tier =
+        UserProfile.normalizeTierValue(row['tier']?.toString() ?? 'hobbyist');
+    final allowed = row['can_add'] as bool? ??
+        row['allowed'] as bool? ??
+        (maxMaps < 0 || activeCount < maxMaps);
+    final limitLabel = maxMaps < 0 ? 'Unlimited' : '$maxMaps';
+
+    return MapLimitCheckResult(
+      allowed: allowed,
+      activeCount: activeCount,
+      maxMaps: maxMaps,
+      tier: tier,
+      message: row['message']?.toString() ??
+          (allowed
+              ? 'Map available ($activeCount/$limitLabel).'
+              : 'Max maps reached for your tier - upgrade?'),
+    );
+  }
+
+  void _logMapLimitSnapshot(MapLimitCheckResult result) {
+    final limitLabel = result.maxMaps < 0 ? 'Unlimited' : '${result.maxMaps}';
+    _logger.i('User tier: ${result.tier}, count: ${result.activeCount}/$limitLabel');
+  }
+
   Future<Property?> fetchProperty(String propertyId) async {
     try {
       final response = await _client
@@ -443,7 +536,8 @@ class SupabaseService {
 
     final limit = await checkCurrentUserMapLimit();
     if (!limit.allowed) {
-      throw Exception('Max maps reached - upgrade? (${limit.activeCount}/${limit.maxMaps})');
+      throw Exception(
+          'Max maps reached - upgrade? (${limit.activeCount}/${limit.maxMaps})');
     }
 
     final payload = {
@@ -610,8 +704,9 @@ class SupabaseService {
       return response[0]['id'] as String;
     } catch (e) {
       final msg = e.toString().toLowerCase();
-      final likelySchemaMismatch =
-          msg.contains('column') || msg.contains('does not exist') || msg.contains("could not find");
+      final likelySchemaMismatch = msg.contains('column') ||
+          msg.contains('does not exist') ||
+          msg.contains("could not find");
 
       if (likelySchemaMismatch) {
         try {
@@ -891,11 +986,8 @@ class SupabaseService {
   /// Get count of maps for billing (corporate admin)
   Future<int> fetchMapsCount(String adminId) async {
     try {
-      final response = await _client
-          .from('properties')
-          .select('id')
-          .eq('owner_id', adminId)
-          ;
+      final response =
+          await _client.from('properties').select('id').eq('owner_id', adminId);
 
       return (response as List).length;
     } catch (e) {
@@ -904,5 +996,10 @@ class SupabaseService {
     }
   }
 }
+
+
+
+
+
 
 

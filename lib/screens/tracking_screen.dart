@@ -17,10 +17,10 @@ import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:turf/turf.dart' as turf;
 
-import '../constants/app_constants.dart';
 import '../models/property_model.dart';
 import '../models/session_model.dart';
 import '../services/map_service.dart';
+import '../services/network_status_service.dart';
 import '../services/offline_session_service.dart';
 import '../services/recommended_path_service.dart';
 import '../services/supabase_service.dart';
@@ -508,33 +508,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
     }
   }
 
-  bool _hasConnection(List<ConnectivityResult> results) {
-    return results.any((r) => r != ConnectivityResult.none);
-  }
-
-  Future<bool> _hasUsableConnection(List<ConnectivityResult> results) async {
-    if (!_hasConnection(results)) return false;
-
-    HttpClient? client;
-    try {
-      client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
-      final request = await client
-          .getUrl(Uri.parse('${AppConstants.supabaseUrl}/rest/v1/'));
-      request.headers.set('apikey', AppConstants.supabaseAnonKey);
-      request.headers
-          .set('Authorization', 'Bearer ${AppConstants.supabaseAnonKey}');
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-
-      final response =
-          await request.close().timeout(const Duration(seconds: 5));
-
-      // 401/403 are still considered reachable; they prove backend connectivity.
-      return response.statusCode < 500;
-    } catch (_) {
-      return false;
-    } finally {
-      client?.close(force: true);
-    }
+  Future<bool> _hasUsableConnection(List<ConnectivityResult> results) {
+    return NetworkStatusService.hasUsableConnection(results);
   }
 
   void _showOfflineBanner() {
@@ -3852,6 +3827,8 @@ class _OverlapHeatCell {
   final LatLng center;
   final int passes;
 }
+
+
 
 
 

@@ -6,7 +6,6 @@ import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
 
 import '../services/supabase_service.dart';
-import '../utils/local_storage_service.dart';
 import '../widgets/app_ui.dart';
 
 final _onboardingLog = Logger();
@@ -21,8 +20,8 @@ class OnboardingScreen extends StatefulWidget {
 }
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
-  static const Color _green = Color(0xFF4CAF50);
-  static const Color _blue = Color(0xFF2196F3);
+  static const Color _green = Color(0xFF2E7D32);
+  static const Color _blue = Color(0xFF1976D2);
 
   final PageController _pageController = PageController();
 
@@ -31,49 +30,68 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   static const List<_Slide> _slides = [
     _Slide(
-      icon: Icons.check_circle_outline_rounded,
-      iconColor: Colors.white,
-      gradientStart: Color(0xFF43A047),
-      gradientEnd: Color(0xFF1E88E5),
+      icon: Icons.spa_outlined,
+      gradientStart: Color(0xFF2E7D32),
+      gradientEnd: Color(0xFF1565C0),
       title: 'Welcome to SprayMap Pro',
-      subtitle: 'Precision GPS coverage for lawn, pest, and farm pros.',
-      description: 'Track every pass. Generate proof. Never guess again.',
+      subtitle: 'Precision tracking to never miss a spot.',
+      description: 'Track every pass with confidence and keep proof for every job.',
     ),
     _Slide(
-      icon: Icons.home_work_outlined,
-      iconColor: Color(0xFF388E3C),
+      icon: Icons.add_business_outlined,
       gradientStart: Color(0xFFE8F5E9),
       gradientEnd: Color(0xFFE3F2FD),
       title: 'Create a Property',
-      subtitle: 'Tap + to add a property — residential, commercial, or farm.',
-      description: 'Manage multiple properties and field workers from one dashboard.',
+      subtitle: 'Tap + or open the Properties list.',
+      description: 'Add customer locations so each job stays organized and easy to revisit.',
     ),
     _Slide(
-      icon: Icons.place_outlined,
-      iconColor: Color(0xFF1565C0),
+      icon: Icons.route_outlined,
       gradientStart: Color(0xFFE3F2FD),
-      gradientEnd: Color(0xFFF3E5F5),
-      title: 'Set Up Boundaries',
-      subtitle: 'Walk the perimeter with your phone or import a drone map.',
-      description: 'Define exclusion zones, special areas, and spray lanes precisely.',
+      gradientEnd: Color(0xFFE8F5E9),
+      title: 'Set Boundaries',
+      subtitle: 'Quick Setup - Walk Perimeter, or import a Drone Map.',
+      description: 'Walking perimeter is fastest onsite. Import is ideal when you already mapped the yard.',
     ),
     _Slide(
-      icon: Icons.directions_walk_rounded,
-      iconColor: Color(0xFF388E3C),
+      icon: Icons.block_outlined,
+      gradientStart: Color(0xFFF1F8E9),
+      gradientEnd: Color(0xFFE3F2FD),
+      title: 'Add Exclusions',
+      subtitle: 'Walk or draw no-spray zones.',
+      description: 'Use colors, notes, and zone types so everyone understands what to avoid.',
+    ),
+    _Slide(
+      icon: Icons.play_circle_outline,
       gradientStart: Color(0xFFE8F5E9),
-      gradientEnd: Color(0xFFF9FBE7),
+      gradientEnd: Color(0xFFE3F2FD),
       title: 'Start Tracking',
-      subtitle: 'Tap Start — walk your property — watch coverage fill green.',
-      description: 'Live GPS tracking with real-time overlap alerts. Reach Mode for edges and bushes.',
+      subtitle: 'Tap Start, then walk the yard to see live coverage fill.',
+      description: 'Coverage fills green in normal tracking and yellow in preemergent workflows.',
+    ),
+    _Slide(
+      icon: Icons.tune_outlined,
+      gradientStart: Color(0xFFE3F2FD),
+      gradientEnd: Color(0xFFE8F5E9),
+      title: 'Use Special Modes',
+      subtitle: 'Reach Mode for edges, Spot Treatment for ant hills.',
+      description: 'Enable Spot Treatment and tap Mark Spot for targeted applications.',
     ),
     _Slide(
       icon: Icons.picture_as_pdf_outlined,
-      iconColor: Color(0xFF1565C0),
-      gradientStart: Color(0xFFE3F2FD),
-      gradientEnd: Color(0xFFE8EAF6),
-      title: 'Export PDF Proof',
-      subtitle: 'Stop the job — sign — auto-generate a professional proof PDF.',
-      description: 'Share with clients, comply with regulations, and measure chemical ROI per job.',
+      gradientStart: Color(0xFFE8F5E9),
+      gradientEnd: Color(0xFFE3F2FD),
+      title: 'Finish Job',
+      subtitle: 'Tap Stop or Mark Done to finalize the session.',
+      description: 'Generate a signed PDF proof with route and coverage for your records.',
+    ),
+    _Slide(
+      icon: Icons.help_outline,
+      gradientStart: Color(0xFF2E7D32),
+      gradientEnd: Color(0xFF1976D2),
+      title: 'Ready to Spray',
+      subtitle: 'Questions later? Open Settings -> Help.',
+      description: 'You can re-open this tutorial anytime from Settings or the dashboard help icon.',
     ),
   ];
 
@@ -105,30 +123,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             right: 0,
             child: SafeArea(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
                 child: Row(
                   children: [
                     if (!widget.isFirstLogin)
                       IconButton(
                         icon: const Icon(Icons.close_rounded),
                         onPressed: () => Navigator.of(context).pop(),
-                        tooltip: 'Close guide',
+                        tooltip: 'Close tutorial',
                       )
                     else
                       const SizedBox(width: 48),
                     const Spacer(),
-                    AnimatedOpacity(
-                      duration: const Duration(milliseconds: 200),
-                      opacity: isLast ? 0 : 1,
-                      child: TextButton(
-                        onPressed: (_isSaving || isLast) ? null : _onSkip,
-                        child: Text(
-                          'Skip',
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            color: scheme.primary,
-                          ),
+                    TextButton(
+                      onPressed: _isSaving ? null : _onSkip,
+                      child: Text(
+                        'Skip',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: scheme.primary,
                         ),
                       ),
                     ),
@@ -138,7 +152,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
           ),
           Positioned(
-            bottom: 114,
+            bottom: 112,
             left: 0,
             right: 0,
             child: Row(
@@ -146,10 +160,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               children: List.generate(
                 _slides.length,
                 (index) => AnimatedContainer(
-                  duration: const Duration(milliseconds: 280),
+                  duration: const Duration(milliseconds: 260),
                   margin: const EdgeInsets.symmetric(horizontal: 4),
                   height: 8,
-                  width: _currentIndex == index ? 26 : 8,
+                  width: _currentIndex == index ? 24 : 8,
                   decoration: BoxDecoration(
                     color: _currentIndex == index
                         ? scheme.primary
@@ -161,7 +175,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
           ),
           Positioned(
-            bottom: 28,
+            bottom: 24,
             left: 20,
             right: 20,
             child: _buildButtons(isLast),
@@ -173,7 +187,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Widget _buildButtons(bool isLast) {
     if (isLast) {
-      final label = widget.isFirstLogin ? 'Get Started' : 'Done';
       return SizedBox(
         width: double.infinity,
         height: 52,
@@ -194,9 +207,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     color: Colors.white,
                   ),
                 )
-              : Text(
-                  label,
-                  style: const TextStyle(
+              : const Text(
+                  'Get Started',
+                  style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
                     color: Colors.white,
@@ -216,7 +229,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               child: OutlinedButton(
                 onPressed: () {
                   _pageController.previousPage(
-                    duration: const Duration(milliseconds: 280),
+                    duration: const Duration(milliseconds: 260),
                     curve: Curves.easeOut,
                   );
                 },
@@ -238,7 +251,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: FilledButton(
               onPressed: () {
                 _pageController.nextPage(
-                  duration: const Duration(milliseconds: 280),
+                  duration: const Duration(milliseconds: 260),
                   curve: Curves.easeOut,
                 );
               },
@@ -264,40 +277,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _onSkip() async {
-    if (widget.isFirstLogin) {
-      await _markComplete();
-      return;
-    }
-    if (mounted) Navigator.of(context).pop();
+    await _markComplete();
   }
 
   Future<void> _onComplete() async {
-    if (widget.isFirstLogin) {
-      await _markComplete();
-      return;
-    }
-    if (mounted) Navigator.of(context).pop();
+    await _markComplete();
   }
 
   Future<void> _markComplete() async {
     setState(() => _isSaving = true);
     final supabase = context.read<SupabaseService>();
-    final localStorage = context.read<LocalStorageService>();
-    final userId = supabase.currentUserId;
 
     try {
-      if (userId != null) {
-        await localStorage.setOnboardingDismissed(userId, true);
-      }
-
       await supabase.markFirstLoginComplete();
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       _onboardingLog.e('Onboarding completion error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          AppSnackBar.info(
-            'Guide saved on this device. Profile sync for this step can be fixed later.',
+          AppSnackBar.warning(
+            'Could not sync tutorial state right now. We will try again later.',
           ),
         );
         Navigator.of(context).pop();
@@ -308,7 +307,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
 class _Slide {
   final IconData icon;
-  final Color iconColor;
   final Color gradientStart;
   final Color gradientEnd;
   final String title;
@@ -317,7 +315,6 @@ class _Slide {
 
   const _Slide({
     required this.icon,
-    required this.iconColor,
     required this.gradientStart,
     required this.gradientEnd,
     required this.title,
@@ -339,62 +336,64 @@ class _SlideWidget extends StatelessWidget {
     return SizedBox.expand(
       child: SingleChildScrollView(
         child: Padding(
-          padding: EdgeInsets.fromLTRB(28, paddingTop + 90, 28, 180),
+          padding: EdgeInsets.fromLTRB(28, paddingTop + 88, 28, 180),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Container(
-                width: 116,
-                height: 116,
+                width: 112,
+                height: 112,
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: [slide.gradientStart, slide.gradientEnd],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
-                  borderRadius: BorderRadius.circular(28),
+                  borderRadius: BorderRadius.circular(26),
                   boxShadow: [
                     BoxShadow(
-                      color: slide.gradientEnd.withValues(alpha: 0.30),
-                      blurRadius: 26,
-                      offset: const Offset(0, 12),
+                      color: slide.gradientEnd.withValues(alpha: 0.25),
+                      blurRadius: 22,
+                      offset: const Offset(0, 10),
                     ),
                   ],
                 ),
-                child: Icon(slide.icon, size: 62, color: slide.iconColor),
+                child: Icon(
+                  slide.icon,
+                  size: 58,
+                  color: Colors.white,
+                ),
               )
                   .animate()
                   .scale(
                     duration: const Duration(milliseconds: 440),
                     curve: Curves.elasticOut,
                   ),
-              const SizedBox(height: 38),
+              const SizedBox(height: 34),
               Text(
                 slide.title,
                 textAlign: TextAlign.center,
                 style: theme.textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w800,
-                  letterSpacing: -0.4,
-                  height: 1.15,
+                  letterSpacing: -0.3,
                 ),
               ),
               const SizedBox(height: 14),
               Text(
                 slide.subtitle,
                 textAlign: TextAlign.center,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  height: 1.55,
-                  fontWeight: FontWeight.w500,
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.72),
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: const Color(0xFF1565C0),
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 14),
               Text(
                 slide.description,
                 textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  height: 1.6,
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.50),
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  height: 1.4,
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.78),
                 ),
               ),
             ],

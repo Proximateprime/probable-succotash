@@ -27,7 +27,8 @@ class OfflineSessionService {
       OfflineSessionService._internal();
   factory OfflineSessionService() => _instance;
 
-  static const String _legacyPendingSessionsKey = 'pending_tracking_sessions_v1';
+  static const String _legacyPendingSessionsKey =
+      'pending_tracking_sessions_v1';
   static const String _boxName = 'offline_tracking_sessions_v2';
   static const int _maxRetries = 3;
 
@@ -90,16 +91,12 @@ class OfflineSessionService {
 
   Future<int> getPendingCount() async {
     await _ensureInitialized();
-    return _allEntries()
-        .where((entry) => _statusOf(entry) == 'queued')
-        .length;
+    return _allEntries().where((entry) => _statusOf(entry) == 'queued').length;
   }
 
   Future<int> getFailedCount() async {
     await _ensureInitialized();
-    return _allEntries()
-        .where((entry) => _statusOf(entry) == 'failed')
-        .length;
+    return _allEntries().where((entry) => _statusOf(entry) == 'failed').length;
   }
 
   Future<void> enqueueSession(Map<String, dynamic> sessionPayload) async {
@@ -116,11 +113,19 @@ class OfflineSessionService {
         return;
       }
 
+      final existing = _box!.get(sessionId);
+      final existingRecord =
+          existing is Map ? Map<String, dynamic>.from(existing) : null;
+      final existingRetry =
+          (existingRecord?['retry_count'] as num?)?.toInt() ?? 0;
+      final existingQueuedAt =
+          existingRecord?['queued_at']?.toString() ?? payload['queued_at'];
+
       final record = <String, dynamic>{
         'id': sessionId,
         'status': 'queued',
-        'retry_count': 0,
-        'queued_at': payload['queued_at'],
+        'retry_count': existingRetry,
+        'queued_at': existingQueuedAt,
         'last_error': null,
         'last_attempt_at': null,
         'updated_at': nowIso,
@@ -190,6 +195,26 @@ class OfflineSessionService {
           await _box!.delete(sessionId);
           synced++;
         } catch (e) {
+          final sourcePayload = _payloadOf(record);
+          if (_isLikelySchemaMismatch(e)) {
+            try {
+              final fallback = _toLegacySupabasePayload(sourcePayload);
+              await supabase.client
+                  .from('tracking_sessions')
+                  .upsert(fallback, onConflict: 'id');
+              await _box!.delete(sessionId);
+              synced++;
+              _logger.w(
+                'Synced pending session $sessionId with legacy payload due to schema mismatch.',
+              );
+              continue;
+            } catch (fallbackError) {
+              _logger.w(
+                'Legacy payload sync fallback failed for $sessionId: $fallbackError',
+              );
+            }
+          }
+
           final nextRetry = retryCount + 1;
           final nextStatus = nextRetry >= _maxRetries ? 'failed' : 'queued';
           await _box!.put(sessionId, {
@@ -230,10 +255,11 @@ class OfflineSessionService {
     final box = _box;
     if (box == null) return const [];
 
-    return box.values
-        .whereType<Map>()
-        .map((entry) => Map<String, dynamic>.from(entry))
-        .toList();
+    return box.toMap().entries.map((entry) {
+      final value = Map<String, dynamic>.from(entry.value);
+      value['id'] ??= entry.key.toString();
+      return value;
+    }).toList();
   }
 
   String _statusOf(Map<String, dynamic> entry) {
@@ -241,7 +267,16 @@ class OfflineSessionService {
   }
 
   String? _idOf(Map<String, dynamic> entry) {
-    return entry['id']?.toString();
+    final direct = entry['id']?.toString();
+    if (direct != null && direct.isNotEmpty) return direct;
+
+    final payload = entry['payload'];
+    if (payload is Map) {
+      final nested = payload['id']?.toString();
+      if (nested != null && nested.isNotEmpty) return nested;
+    }
+
+    return null;
   }
 
   Map<String, dynamic> _payloadOf(Map<String, dynamic> entry) {
@@ -320,6 +355,36 @@ class OfflineSessionService {
     final result = <String, dynamic>{};
     for (final entry in source.entries) {
       if (allowed.contains(entry.key)) {
+        result[entry.key] = entry.value;
+      }
+    }
+
+    return result;
+  }
+
+  bool _isLikelySchemaMismatch(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('column') ||
+        message.contains('does not exist') ||
+        message.contains('could not find');
+  }
+
+  Map<String, dynamic> _toLegacySupabasePayload(Map<String, dynamic> source) {
+    const legacyAllowed = {
+      'id',
+      'property_id',
+      'user_id',
+      'start_time',
+      'end_time',
+      'coverage_percent',
+      'paths',
+      'proof_pdf_url',
+      'created_at',
+    };
+
+    final result = <String, dynamic>{};
+    for (final entry in source.entries) {
+      if (legacyAllowed.contains(entry.key)) {
         result[entry.key] = entry.value;
       }
     }

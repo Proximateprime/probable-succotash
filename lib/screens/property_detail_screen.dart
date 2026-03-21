@@ -38,6 +38,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
   List<TrackingSession> _sessions = [];
   List<UserProfile> _availableWorkers = [];
   UserProfile? _currentUser;
+  MapLimitCheckResult? _mapLimit;
   bool _isLoading = false;
   bool _isAssigning = false;
   bool _isGeneratingRecommendedPath = false;
@@ -73,10 +74,12 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
   double? _realUsagePerAcre;
   double? _estimatedRemainingAmount;
   bool _isSavingTreatment = false;
+  bool _outdoorModeEnabled = false;
 
   @override
   void initState() {
     super.initState();
+    _loadInteractionPrefs();
     _property = widget.property;
     _hydrateTreatmentFormFromProperty();
     _loadData();
@@ -101,12 +104,23 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
     messenger.showSnackBar(snackBar);
   }
 
+  Future<void> _loadInteractionPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _outdoorModeEnabled = prefs.getBool('tracking_outdoor_mode') ?? false;
+      });
+    } catch (_) {}
+  }
+
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
 
     try {
       final supabase = context.read<SupabaseService>();
       final profile = await supabase.fetchCurrentUserProfile();
+      final limit = await supabase.checkCurrentUserMapLimit();
       final updatedProperty = await supabase.fetchProperty(_property.id);
       final sessions = await supabase.fetchPropertySessions(_property.id);
       final latestSwathWidth =
@@ -121,6 +135,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
 
       setState(() {
         _currentUser = profile;
+        _mapLimit = limit;
         _property = updatedProperty ?? _property;
         _sessions = sessions;
         _currentSwathWidthFeet =
@@ -2011,8 +2026,9 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                       SizedBox(
                         width: double.infinity,
                         child: OutlinedButton.icon(
-                          onPressed:
-                              _currentUser == null ? null : _openWebODMBuilder,
+                          onPressed: _currentUser == null || (!_property.hasMapData() && !(_mapLimit?.allowed ?? true))
+                              ? null
+                              : _openWebODMBuilder,
                           icon: const Icon(Icons.add_chart_outlined),
                           label: const Text('Import Drone Map (Preferred)'),
                           style: OutlinedButton.styleFrom(
@@ -2126,8 +2142,9 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
   }
 
   Widget _buildActionButtons(bool isCompactLayout) {
+    final canImportNewMap = _property.hasMapData() || (_mapLimit?.allowed ?? true);
     final mapButton = OutlinedButton.icon(
-      onPressed: _currentUser == null ? null : _openWebODMBuilder,
+      onPressed: _currentUser == null || !canImportNewMap ? null : _openWebODMBuilder,
       icon: const Icon(Icons.map_outlined),
       label: Text(
         _property.hasMapData()
@@ -2208,7 +2225,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
         actions: [
           IconButton(
             onPressed: _showEditPropertyDialog,
-            icon: const Icon(Icons.edit_outlined),
+            icon: Icon(Icons.edit_outlined, size: _outdoorModeEnabled ? 34 : 24),
             tooltip: 'Edit property',
           ),
         ],
@@ -2280,10 +2297,11 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                     child: FloatingActionButton.extended(
                       heroTag: 'start_tracking_fab',
                       onPressed: _isLoading ? null : _startTracking,
-                      backgroundColor: Theme.of(context).colorScheme.primary,
+                      backgroundColor: const Color(0xFF2E7D32),
                       foregroundColor: Colors.white,
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('Start Tracking'),
+                      icon: Icon(Icons.play_arrow, size: _outdoorModeEnabled ? 36 : 24),
+                      label: Text('Start Tracking', style: TextStyle(fontSize: _outdoorModeEnabled ? 22 : 16, fontWeight: FontWeight.w700)),
+                      extendedPadding: EdgeInsets.symmetric(horizontal: _outdoorModeEnabled ? 28 : 16, vertical: _outdoorModeEnabled ? 16 : 8),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -2392,6 +2410,16 @@ class _ExclusionNotePin {
   final LatLng point;
   final String note;
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

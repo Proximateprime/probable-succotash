@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../services/network_status_service.dart';
 import '../services/storage_service.dart';
 
 class JobSummaryResult {
@@ -66,9 +67,9 @@ class _JobSummaryScreenState extends State<JobSummaryScreen> {
   }
 
   Future<void> _loadConnectivity() async {
-    final result = await _connectivity.checkConnectivity();
+    final online = await NetworkStatusService.checkCurrentConnection(_connectivity);
     if (!mounted) return;
-    setState(() => _isOffline = result.contains(ConnectivityResult.none));
+    setState(() => _isOffline = !online);
   }
 
   String _formatDuration(int seconds) {
@@ -84,7 +85,11 @@ class _JobSummaryScreenState extends State<JobSummaryScreen> {
   Future<void> _pickAndUploadPhoto() async {
     if (_isUploadingPhoto) return;
 
-    if (_isOffline) {
+    final online = await NetworkStatusService.checkCurrentConnection(_connectivity);
+    if (!mounted) return;
+    setState(() => _isOffline = !online);
+
+    if (!online) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -290,3 +295,4 @@ class _JobSummaryScreenState extends State<JobSummaryScreen> {
     );
   }
 }
+

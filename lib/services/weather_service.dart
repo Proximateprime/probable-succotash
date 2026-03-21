@@ -81,24 +81,43 @@ class WeatherFetchResult {
 
 class WeatherService {
   static const String _cacheKey = 'dashboard_weather_cache_v1';
+  static const Duration _maxCacheAge = Duration(hours: 6);
 
   Future<WeatherFetchResult> fetchWithFallback({
     required double latitude,
     required double longitude,
   }) async {
+    if (latitude.abs() > 90 || longitude.abs() > 180) {
+      return cachedOrUnavailable(
+        reason: 'Live weather unavailable. Showing last known conditions.',
+      );
+    }
+
     try {
       final snapshot = await _fetchLiveWithRetry(latitude, longitude);
       await _cacheSnapshot(snapshot);
       return WeatherFetchResult(snapshot: snapshot, fromCache: false);
-    } catch (e) {
-      final cached = await _loadCachedSnapshot();
+    } catch (_) {
+      final cached = await _loadCachedSnapshot(maxAge: _maxCacheAge);
       if (cached != null) {
         return WeatherFetchResult(
           snapshot: cached,
           fromCache: true,
-          errorMessage: 'Live weather unavailable. Showing last known conditions.',
+          errorMessage:
+              'Live weather unavailable. Showing last known conditions.',
         );
       }
+
+      final stale = await _loadCachedSnapshot();
+      if (stale != null) {
+        return WeatherFetchResult(
+          snapshot: stale,
+          fromCache: true,
+          errorMessage:
+              'Live weather unavailable. Showing older cached weather.',
+        );
+      }
+
       return const WeatherFetchResult(
         snapshot: null,
         fromCache: false,
@@ -108,12 +127,21 @@ class WeatherService {
   }
 
   Future<WeatherFetchResult> cachedOrUnavailable({String? reason}) async {
-    final cached = await _loadCachedSnapshot();
+    final cached = await _loadCachedSnapshot(maxAge: _maxCacheAge);
     if (cached != null) {
       return WeatherFetchResult(
         snapshot: cached,
         fromCache: true,
         errorMessage: reason ?? 'Showing last known weather.',
+      );
+    }
+
+    final stale = await _loadCachedSnapshot();
+    if (stale != null) {
+      return WeatherFetchResult(
+        snapshot: stale,
+        fromCache: true,
+        errorMessage: reason ?? 'Showing older cached weather.',
       );
     }
 
@@ -143,7 +171,8 @@ class WeatherService {
     Object? lastError;
     for (var attempt = 0; attempt < 3; attempt++) {
       try {
-        final response = await http.get(uri).timeout(const Duration(seconds: 8));
+        final response =
+            await http.get(uri).timeout(const Duration(seconds: 8));
 
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -191,7 +220,8 @@ class WeatherService {
     );
   }
 
-  int _rainChanceForCurrentHour(Map<String, dynamic> data, String? currentTime) {
+  int _rainChanceForCurrentHour(
+      Map<String, dynamic> data, String? currentTime) {
     final hourly = data['hourly'];
     if (hourly is! Map) return 0;
 
@@ -203,7 +233,8 @@ class WeatherService {
 
     var index = 0;
     if (currentTime != null) {
-      final found = times.indexWhere((entry) => entry?.toString() == currentTime);
+      final found =
+          times.indexWhere((entry) => entry?.toString() == currentTime);
       if (found >= 0) {
         index = found;
       }
@@ -223,14 +254,23 @@ class WeatherService {
     await prefs.setString(_cacheKey, jsonEncode(snapshot.toJson()));
   }
 
-  Future<WeatherSnapshot?> _loadCachedSnapshot() async {
+  Future<WeatherSnapshot?> _loadCachedSnapshot({Duration? maxAge}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_cacheKey);
       if (raw == null || raw.isEmpty) return null;
       final decoded = jsonDecode(raw);
       if (decoded is! Map) return null;
-      return WeatherSnapshot.fromJson(Map<String, dynamic>.from(decoded));
+      final snapshot =
+          WeatherSnapshot.fromJson(Map<String, dynamic>.from(decoded));
+      if (snapshot == null) return null;
+
+      if (maxAge != null &&
+          DateTime.now().difference(snapshot.fetchedAt) > maxAge) {
+        return null;
+      }
+
+      return snapshot;
     } catch (_) {
       return null;
     }
@@ -247,5 +287,3 @@ class WeatherService {
     return 'Stormy';
   }
 }
-
-

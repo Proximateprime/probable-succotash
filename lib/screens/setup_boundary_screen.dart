@@ -74,6 +74,14 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
     ),
   ];
 
+  static const double _walkAutoAddAccuracyThresholdMeters = 6;
+  static const double _walkPoorGpsWarningThresholdMeters = 8;
+  static const double _walkJumpThresholdMeters = 5;
+  static const double _walkMaxSpeedMph = 10;
+  static const double _walkAutoCloseDistanceMeters = 10;
+  static const int _walkPoorGpsConsecutiveLimit = 5;
+  static const int _walkSmoothingWindow = 4;
+
   static const List<_ExclusionTypeOption> _exclusionTypeOptions = [
     _ExclusionTypeOption(
       id: 'septic_field',
@@ -104,6 +112,15 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
 
   StreamSubscription<Position>? _positionSubscription;
   DateTime? _lastAcceptedSampleAt;
+  final List<LatLng> _recentGoodWalkPoints = [];
+  int _filteredWalkPoints = 0;
+  int _poorGpsStreak = 0;
+  bool _manualPointMode = false;
+  bool _showGpsDebug = false;
+  bool _poorGpsPromptShown = false;
+  bool _pathNotClosedWarning = false;
+  LatLng? _rejectedJumpPoint;
+
 
   @override
   void initState() {
@@ -239,7 +256,10 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
     }
   }
 
-  Future<void> _startWalk(WalkSegmentType type) async {
+  Future<void> _startWalk(
+    WalkSegmentType type, {
+    List<LatLng>? seedTrail,
+  }) async {
     if (_isWalking) return;
 
     try {
@@ -267,11 +287,28 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
 
       await _positionSubscription?.cancel();
 
+      final preparedSeed = List<LatLng>.from(seedTrail ?? const []);
+      if (preparedSeed.length >= 2 &&
+          _samePoint(preparedSeed.first, preparedSeed.last)) {
+        preparedSeed.removeLast();
+      }
+
       setState(() {
         _activeWalkType = type;
-        _activeTrail.clear();
+        _activeTrail
+          ..clear()
+          ..addAll(preparedSeed);
         _isWalking = true;
+        _manualPointMode = false;
+        _pathNotClosedWarning = false;
+        _rejectedJumpPoint = null;
         _lastAcceptedSampleAt = null;
+        _filteredWalkPoints = 0;
+        _poorGpsStreak = 0;
+        _poorGpsPromptShown = false;
+        _recentGoodWalkPoints
+          ..clear()
+          ..addAll(preparedSeed.take(_walkSmoothingWindow));
       });
 
       await WakelockPlus.enable();
@@ -280,6 +317,11 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
         desiredAccuracy: LocationAccuracy.bestForNavigation,
       );
       _acceptSample(current, force: true);
+
+      _showSnack(
+        'For best accuracy, use High-Accuracy GPS mode (Android only) or external receiver.',
+        color: Colors.blueGrey.shade800,
+      );
 
       _positionSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
@@ -298,6 +340,7 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
               _activeWalkType = null;
               _activeTrail.clear();
               _lastAcceptedSampleAt = null;
+              _recentGoodWalkPoints.clear();
             });
           }
           WakelockPlus.disable();
@@ -314,6 +357,7 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
           _activeWalkType = null;
           _activeTrail.clear();
           _lastAcceptedSampleAt = null;
+          _recentGoodWalkPoints.clear();
         });
       }
       WakelockPlus.disable();
@@ -322,45 +366,154 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
     }
   }
 
-  void _acceptSample(Position position, {bool force = false}) {
-    if (!mounted) return;
+  bool _acceptSample(
+    Position position, {
+    bool force = false,
+    bool manualTap = false,
+  }) {
+    if (!mounted) return false;
 
-    final point = LatLng(position.latitude, position.longitude);
+    final rawPoint = LatLng(position.latitude, position.longitude);
 
     setState(() {
-      _currentGps = point;
+      _currentGps = rawPoint;
     });
 
-    if (!_isWalking) return;
+    if (!_isWalking) return false;
 
     final now = DateTime.now();
-    if (!force && _lastAcceptedSampleAt != null) {
+    if (!manualTap && !force && _lastAcceptedSampleAt != null) {
       final elapsedMs = now.difference(_lastAcceptedSampleAt!).inMilliseconds;
       if (elapsedMs < 1200) {
-        return;
+        return false;
       }
     }
 
-    if (!force && position.accuracy > 35) {
-      return;
+    final accuracy = position.accuracy.isFinite
+        ? position.accuracy
+        : _walkPoorGpsWarningThresholdMeters + 1;
+
+    if (accuracy > _walkPoorGpsWarningThresholdMeters) {
+      _poorGpsStreak += 1;
+      if (_poorGpsStreak >= _walkPoorGpsConsecutiveLimit &&
+          !_poorGpsPromptShown) {
+        _poorGpsPromptShown = true;
+        _showSnack(
+          'Poor GPS - points may be off. Switch to manual point add?',
+          color: Colors.orange.shade800,
+        );
+      }
+    } else {
+      _poorGpsStreak = 0;
+      _poorGpsPromptShown = false;
     }
 
-    if (_activeTrail.isNotEmpty) {
-      final last = _activeTrail.last;
-      final movedMeters = _distance.as(LengthUnit.Meter, last, point);
-      final minMoveMeters =
-          math.max(1.8, math.min(8.0, position.accuracy * 0.3));
-      if (movedMeters < minMoveMeters && !force) {
-        return;
+    final speedMph = (position.speed.isFinite ? position.speed : 0) * 2.236936;
+    if (!force && accuracy > _walkAutoAddAccuracyThresholdMeters) {
+      setState(() {
+        _filteredWalkPoints += 1;
+      });
+      return false;
+    }
+
+    if (!force && speedMph > _walkMaxSpeedMph) {
+      setState(() {
+        _filteredWalkPoints += 1;
+      });
+      return false;
+    }
+
+    final lastAccepted = _activeTrail.isEmpty ? null : _activeTrail.last;
+    if (lastAccepted != null) {
+      final movedMeters = _distance.as(LengthUnit.Meter, lastAccepted, rawPoint);
+      if (!force && movedMeters > _walkJumpThresholdMeters) {
+        setState(() {
+          _filteredWalkPoints += 1;
+          _rejectedJumpPoint = rawPoint;
+        });
+        return false;
       }
+
+      final minMoveMeters = math.max(0.8, math.min(2.5, accuracy * 0.22));
+      if (!force && !manualTap && movedMeters < minMoveMeters) {
+        return false;
+      }
+    }
+
+    _recentGoodWalkPoints.add(rawPoint);
+    while (_recentGoodWalkPoints.length > _walkSmoothingWindow) {
+      _recentGoodWalkPoints.removeAt(0);
+    }
+
+    final smooth = _smoothedPoint(_recentGoodWalkPoints);
+
+    if (_manualPointMode && !manualTap) {
+      return false;
     }
 
     _lastAcceptedSampleAt = now;
     setState(() {
-      _activeTrail.add(point);
+      _rejectedJumpPoint = null;
+      _pathNotClosedWarning = false;
+      _activeTrail.add(smooth);
+    });
+
+    return true;
+  }
+
+  LatLng _smoothedPoint(List<LatLng> points) {
+    if (points.isEmpty) return _currentGps ?? _mapCenter;
+    var lat = 0.0;
+    var lng = 0.0;
+    for (final p in points) {
+      lat += p.latitude;
+      lng += p.longitude;
+    }
+    final count = points.length.toDouble();
+    return LatLng(lat / count, lng / count);
+  }
+
+  Future<void> _addPointHere() async {
+    if (!_isWalking) return;
+
+    try {
+      final current = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
+      );
+      final recorded = _acceptSample(current, manualTap: true);
+      if (!recorded) {
+        _showSnack(
+          'Point not added. Wait for a better GPS fix (< ${_walkAutoAddAccuracyThresholdMeters.toStringAsFixed(0)} m).',
+          color: Colors.orange.shade800,
+        );
+      }
+    } catch (_) {
+      _showSnack('Could not add point from current GPS fix.',
+          color: Colors.red.shade700);
+    }
+  }
+
+  void _snapTrailToFirst() {
+    if (_activeTrail.length < 3) return;
+    final first = _activeTrail.first;
+    setState(() {
+      if (_samePoint(_activeTrail.last, first)) {
+        _activeTrail[_activeTrail.length - 1] = first;
+      } else {
+        _activeTrail.add(first);
+      }
+      _pathNotClosedWarning = false;
     });
   }
 
+  Future<void> _fixOuterPath() async {
+    if (_outerBoundary.length < 3) return;
+    final seed = List<LatLng>.from(_outerBoundary);
+    if (seed.length >= 2 && _samePoint(seed.first, seed.last)) {
+      seed.removeLast();
+    }
+    await _startWalk(WalkSegmentType.outer, seedTrail: seed);
+  }
   void _undoLastPoint() {
     if (!_isWalking || _activeTrail.isEmpty) return;
     setState(() {
@@ -388,9 +541,27 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
       return;
     }
 
+    if (_activeWalkType != WalkSegmentType.sliceZone &&
+        _activeTrail.length >= 3) {
+      final first = _activeTrail.first;
+      final last = _activeTrail.last;
+      final closeDistance = _distance.as(LengthUnit.Meter, first, last);
+      if (closeDistance > _walkAutoCloseDistanceMeters) {
+        setState(() => _pathNotClosedWarning = true);
+        _showSnack(
+          'Path not closed - bad GPS at end?',
+          color: Colors.orange.shade800,
+        );
+        return;
+      }
+    }
+
     final closed = _activeWalkType == WalkSegmentType.sliceZone
         ? List<LatLng>.from(_activeTrail)
-        : _closedPolygon(_activeTrail);
+        : _closedPolygon(
+            _activeTrail,
+            autoCloseDistanceMeters: _walkAutoCloseDistanceMeters,
+          );
     _ExclusionZoneDraft? exclusionDraft;
     if (_activeWalkType == WalkSegmentType.exclusion) {
       exclusionDraft = await _promptExclusionNote();
@@ -458,13 +629,16 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
       _isWalking = false;
       _activeWalkType = null;
       _activeTrail.clear();
+      _recentGoodWalkPoints.clear();
+      _manualPointMode = false;
       _lastAcceptedSampleAt = null;
+      _pathNotClosedWarning = false;
+      _rejectedJumpPoint = null;
     });
 
     _positionSubscription?.cancel();
     WakelockPlus.disable();
   }
-
   Future<_ExclusionZoneDraft?> _promptExclusionNote() async {
     final controller = TextEditingController();
     var selected = _exclusionTypeOptions.first;
@@ -867,16 +1041,27 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
     return area.abs() / 2;
   }
 
-  List<LatLng> _closedPolygon(List<LatLng> points) {
+  List<LatLng> _closedPolygon(
+    List<LatLng> points, {
+    double autoCloseDistanceMeters = double.infinity,
+  }) {
     if (points.isEmpty) return const [];
+
     final closed = List<LatLng>.from(points);
+    if (closed.length < 2) return closed;
+
     final first = closed.first;
     final last = closed.last;
-    final isClosed = (first.latitude - last.latitude).abs() < 1e-8 &&
-        (first.longitude - last.longitude).abs() < 1e-8;
-    if (!isClosed) {
+    final alreadyClosed = _samePoint(first, last);
+    if (alreadyClosed) {
+      return closed;
+    }
+
+    final closeDistance = _distance.as(LengthUnit.Meter, first, last);
+    if (closeDistance <= autoCloseDistanceMeters) {
       closed.add(first);
     }
+
     return closed;
   }
 
@@ -1128,6 +1313,52 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
     }
   }
 
+  List<Polyline> _walkPreviewDashes() {
+    if (!_isWalking || _activeTrail.isEmpty) return const [];
+
+    final target = _rejectedJumpPoint ?? _currentGps;
+    if (target == null) return const [];
+
+    final start = _activeTrail.last;
+    final isJump = _rejectedJumpPoint != null;
+    final color = isJump ? const Color(0xFFD32F2F) : const Color(0xFF00BCD4);
+
+    return _dashSegment(start, target, color);
+  }
+
+  List<Polyline> _dashSegment(LatLng start, LatLng end, Color color) {
+    const dashMeters = 2.0;
+    const gapMeters = 1.2;
+
+    final total = _distance.as(LengthUnit.Meter, start, end);
+    if (total <= 0.01) {
+      return [
+        Polyline(points: [start, end], strokeWidth: 3, color: color),
+      ];
+    }
+
+    final heading = _distance.bearing(start, end);
+    final lines = <Polyline>[];
+    var traveled = 0.0;
+    while (traveled < total) {
+      final dashStart = _distance.offset(start, traveled, heading);
+      final dashEnd = _distance.offset(
+        start,
+        math.min(total, traveled + dashMeters),
+        heading,
+      );
+      lines.add(
+        Polyline(
+          points: [dashStart, dashEnd],
+          strokeWidth: 3,
+          color: color,
+        ),
+      );
+      traveled += dashMeters + gapMeters;
+    }
+
+    return lines;
+  }
   List<LatLng> _extractPolygonVertices(Map<String, dynamic>? polygonGeoJson) {
     if (polygonGeoJson == null || polygonGeoJson['type'] != 'Polygon') {
       return [];
@@ -1240,7 +1471,7 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
                 Text(_stepHint()),
                 const SizedBox(height: 6),
                 Text(
-                  'Outer: ${_outerBoundary.length >= 4 ? 'Saved' : 'Pending'} â€¢ Zones: ${_specialZones.length} â€¢ Exclusions: ${_exclusionZones.length}',
+                  'Outer: ${_outerBoundary.length >= 4 ? 'Saved' : 'Pending'} GÇó Zones: ${_specialZones.length} GÇó Exclusions: ${_exclusionZones.length}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 if (outerAcres != null)
@@ -1327,6 +1558,8 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
                       ),
                     ],
                   ),
+                if (_walkPreviewDashes().isNotEmpty)
+                  PolylineLayer(polylines: _walkPreviewDashes()),
                 if (_slicePreview != null)
                   PolygonLayer(
                     polygons: [
@@ -1404,13 +1637,28 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   if (!_isWalking && _step == BoundarySetupStep.outer)
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: () => _startWalk(WalkSegmentType.outer),
-                        icon: const Icon(Icons.directions_walk),
-                        label: const Text('Start Outer Walk'),
-                      ),
+                    Column(
+                      children: [
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: () => _startWalk(WalkSegmentType.outer),
+                            icon: const Icon(Icons.directions_walk),
+                            label: const Text('Start Outer Walk'),
+                          ),
+                        ),
+                        if (_outerBoundary.length >= 4) ...[
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _fixOuterPath,
+                              icon: const Icon(Icons.build_circle_outlined),
+                              label: const Text('Fix Path'),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   if (!_isWalking && _step == BoundarySetupStep.zones)
                     Column(
@@ -1520,6 +1768,48 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
                             ),
                           ],
                         ),
+                        const SizedBox(height: 10),
+                        SwitchListTile.adaptive(
+                          value: _manualPointMode,
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Manual Point Mode'),
+                          subtitle: const Text('Disable auto-add and tap Add Point Here.'),
+                          onChanged: (value) => setState(() => _manualPointMode = value),
+                        ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: _addPointHere,
+                                icon: const Icon(Icons.add_location_alt_outlined),
+                                label: const Text('Add Point Here'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: (_activeWalkType == WalkSegmentType.sliceZone || _activeTrail.length < 3) ? null : _snapTrailToFirst,
+                                icon: const Icon(Icons.link_outlined),
+                                label: const Text('Snap to First'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        SwitchListTile.adaptive(
+                          value: _showGpsDebug,
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Show GPS Debug'),
+                          subtitle: Text('Filtered ${_filteredWalkPoints} bad points'),
+                          onChanged: (value) => setState(() => _showGpsDebug = value),
+                        ),
+                        if (_pathNotClosedWarning)
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Path not closed - bad GPS at end?',
+                              style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.w700),
+                            ),
+                          ),
                         const SizedBox(height: 10),
                         SizedBox(
                           width: double.infinity,
@@ -1664,4 +1954,16 @@ class _ExclusionZoneDraft {
   final Color color;
   final String? note;
 }
+
+
+
+
+
+
+
+
+
+
+
+
 

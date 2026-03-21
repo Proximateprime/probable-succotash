@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:provider/provider.dart';
+import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:signature/signature.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -71,6 +72,7 @@ class _ExportScreenState extends State<ExportScreen> {
   String? _pdfUrl;
   String? _savedApplicatorName;
   Uint8List? _savedSignatureBytes;
+  Uint8List? _lastGeneratedPdfBytes;
   final SignatureController _signatureController = SignatureController(
     penStrokeWidth: 2.2,
     penColor: Colors.black,
@@ -565,6 +567,10 @@ class _ExportScreenState extends State<ExportScreen> {
       );
 
       final Uint8List pdfBytes = await pdf.save();
+      _lastGeneratedPdfBytes = pdfBytes;
+      setState(() {
+        _success = true;
+      });
 
       debugPrint(
         'Uploading PDF for property ${widget.propertyId}, session ${widget.sessionId}',
@@ -607,7 +613,8 @@ class _ExportScreenState extends State<ExportScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('✗ Failed to upload PDF to storage'),
+              content:
+                  Text('PDF saved locally. Upload failed; retry when online.'),
               backgroundColor: Colors.red,
             ),
           );
@@ -627,6 +634,16 @@ class _ExportScreenState extends State<ExportScreen> {
         setState(() => _isGenerating = false);
       }
     }
+  }
+
+  Future<void> _openLocalPdfPreview() async {
+    final bytes = _lastGeneratedPdfBytes;
+    if (bytes == null || bytes.isEmpty) return;
+
+    await Printing.layoutPdf(
+      onLayout: (format) async => bytes,
+      name: 'spraymap_${widget.sessionId}.pdf',
+    );
   }
 
   void _copyPdfUrl(String url) {
@@ -810,35 +827,43 @@ class _ExportScreenState extends State<ExportScreen> {
                         style: TextStyle(fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 12),
-                      if (_pdfUrl != null) ...[
-                        const Text('Proof stored in Supabase Storage:'),
+                      if (_lastGeneratedPdfBytes != null) ...[
+                        ElevatedButton.icon(
+                          onPressed: _openLocalPdfPreview,
+                          icon: const Icon(Icons.picture_as_pdf_outlined),
+                          label: const Text('View PDF (Offline/Local)'),
+                        ),
                         const SizedBox(height: 8),
-                        Container(
-                          color: Colors.white,
-                          padding: const EdgeInsets.all(12),
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Text(
-                              _pdfUrl!,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                fontFamily: 'monospace',
+                        if (_pdfUrl != null) ...[
+                          const Text('Proof stored in Supabase Storage:'),
+                          const SizedBox(height: 8),
+                          Container(
+                            color: Colors.white,
+                            padding: const EdgeInsets.all(12),
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Text(
+                                _pdfUrl!,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontFamily: 'monospace',
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          onPressed: () => _launchPdfUrl(_pdfUrl!),
-                          icon: const Icon(Icons.open_in_new),
-                          label: const Text('View PDF'),
-                        ),
-                        const SizedBox(height: 8),
-                        ElevatedButton.icon(
-                          onPressed: () => _copyPdfUrl(_pdfUrl!),
-                          icon: const Icon(Icons.copy),
-                          label: const Text('Copy Link'),
-                        ),
+                          const SizedBox(height: 12),
+                          ElevatedButton.icon(
+                            onPressed: () => _launchPdfUrl(_pdfUrl!),
+                            icon: const Icon(Icons.open_in_new),
+                            label: const Text('View PDF'),
+                          ),
+                          const SizedBox(height: 8),
+                          ElevatedButton.icon(
+                            onPressed: () => _copyPdfUrl(_pdfUrl!),
+                            icon: const Icon(Icons.copy),
+                            label: const Text('Copy Link'),
+                          ),
+                        ],
                       ],
                     ],
                   ),
@@ -865,11 +890,3 @@ class _ExclusionZonePdfInfo {
 
   const _ExclusionZonePdfInfo({required this.pointCount, this.note});
 }
-
-
-
-
-
-
-
-

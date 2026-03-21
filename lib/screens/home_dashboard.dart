@@ -7,21 +7,20 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter/foundation.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import '../constants/app_constants.dart';
 import '../models/property_model.dart';
 import '../models/session_model.dart';
 import '../models/user_model.dart';
+import '../services/network_status_service.dart';
 import '../services/offline_session_service.dart';
 import '../services/supabase_service.dart';
 import '../services/weather_service.dart';
-import '../utils/local_storage_service.dart';
 import '../utils/theme_controller.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/dashboard_widgets.dart';
@@ -57,6 +56,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
   static const Color _blueAccent = Color(0xFF2196F3);
 
   UserProfile? _userProfile;
+  MapLimitCheckResult? _mapLimit;
   List<Property> _properties = [];
   List<TrackingSession> _allSessions = [];
 
@@ -91,16 +91,38 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
   // Search
   String _propertySearchQuery = '';
+  bool _outdoorModeEnabled = false;
+  bool _keepScreenOnDuringJobs = true;
 
   @override
   void initState() {
     super.initState();
+    _loadInteractionPrefs();
     _initConnectivityMonitoring();
     _loadData();
     _maybeFetchWeather();
     _loadPendingSessionCount();
     _startPendingSyncPoller();
     _attemptStartupSync();
+  }
+
+  Future<void> _loadInteractionPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _outdoorModeEnabled = prefs.getBool('tracking_outdoor_mode') ?? false;
+        _keepScreenOnDuringJobs = prefs.getBool('tracking_keep_screen_on_jobs') ?? true;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _persistInteractionPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('tracking_outdoor_mode', _outdoorModeEnabled);
+      await prefs.setBool('tracking_keep_screen_on_jobs', _keepScreenOnDuringJobs);
+    } catch (_) {}
   }
 
   Future<void> _maybeFetchWeather() async {
@@ -113,8 +135,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
   Future<void> _initConnectivityMonitoring() async {
     try {
-      final initial = await _connectivity.checkConnectivity();
-      final connected = await _hasUsableConnection(initial);
+      final connected =
+          await NetworkStatusService.checkCurrentConnection(_connectivity);
       if (mounted) {
         setState(() => _isOfflineMode = !connected);
       }
@@ -122,42 +144,21 @@ class _HomeDashboardState extends State<HomeDashboard> {
       _connectivitySubscription?.cancel();
       _connectivitySubscription =
           _connectivity.onConnectivityChanged.listen((results) async {
-        final connectedNow = await _hasUsableConnection(results);
+        final connectedNow =
+            await NetworkStatusService.hasUsableConnection(results);
         final wasOffline = _isOfflineMode;
 
         if (!mounted) return;
         setState(() => _isOfflineMode = !connectedNow);
 
-        if (wasOffline && connectedNow && (_pendingSessionCount > 0 || _failedSessionCount > 0)) {
+        if (wasOffline &&
+            connectedNow &&
+            (_pendingSessionCount > 0 || _failedSessionCount > 0)) {
           await _syncPendingSessions(silent: true);
         }
       });
     } catch (_) {
       // Keep dashboard usable if connectivity plugin is unavailable.
-    }
-  }
-
-  bool _hasConnection(List<ConnectivityResult> results) {
-    return results.any((r) => r != ConnectivityResult.none);
-  }
-
-  Future<bool> _hasUsableConnection(List<ConnectivityResult> results) async {
-    if (!_hasConnection(results)) return false;
-
-    try {
-      final response = await http.get(
-        Uri.parse('${AppConstants.supabaseUrl}/rest/v1/'),
-        headers: {
-          'apikey': AppConstants.supabaseAnonKey,
-          'Authorization': 'Bearer ${AppConstants.supabaseAnonKey}',
-          'Accept': 'application/json',
-        },
-      ).timeout(const Duration(seconds: 5));
-
-      // 401/403 are still considered reachable; they prove backend connectivity.
-      return response.statusCode < 500;
-    } catch (_) {
-      return false;
     }
   }
 
@@ -177,12 +178,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
         return;
       }
 
-      await supabase.syncCurrentUserActiveMapsCount();
-
       final profile = await supabase.ensureCurrentUserProfile();
-      final localStorage = context.read<LocalStorageService>();
-      final onboardingDismissed = localStorage.isOnboardingDismissed(userId);
-      final role = (profile?.role ?? 'hobbyist').toLowerCase();
+      final limit = await supabase.checkCurrentUserMapLimit();
+      final refreshedProfile = await supabase.fetchCurrentUserProfile() ?? profile;
+      final role = (refreshedProfile?.role ?? 'hobbyist').toLowerCase();
       final properties = await supabase.fetchUserProperties(
         userId,
         userRole: role,
@@ -199,7 +198,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
       List<UserProfile> teamWorkers = [];
       Map<String, List<TrackingSession>> teamSessionsByWorker = {};
 
-      final tierKey = _normalizedTier(profile);
+      final tierKey = _normalizedTier(refreshedProfile);
       if (tierKey == 'corporate') {
         teamWorkers = await supabase.fetchTeamWorkers(userId);
         teamSessionsByWorker = await supabase.fetchTeamSessions(
@@ -211,7 +210,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
       if (!mounted) return;
       setState(() {
-        _userProfile = profile;
+        _userProfile = refreshedProfile;
+        _mapLimit = limit;
         _properties = visibleProperties;
         _allSessions = sessions;
         _teamWorkers = teamWorkers;
@@ -220,9 +220,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
         _isLoading = false;
       });
 
-      if (profile?.firstLogin == true && !onboardingDismissed && mounted) {
+      if (refreshedProfile?.hasSeenOnboarding == true && mounted) {
         Future.microtask(() {
-          _showOnboarding();
+          _showOnboarding(isFirstLogin: true);
         });
       }
 
@@ -240,7 +240,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
     final maxLabel = limit.maxMaps < 0 ? 'Unlimited' : '${limit.maxMaps}';
     final message =
-        'Max maps reached - upgrade? (${limit.activeCount}/$maxLabel)';
+        'Max maps reached for your tier - upgrade? (${limit.activeCount}/$maxLabel)';
 
     await showDialog<void>(
       context: context,
@@ -263,13 +263,35 @@ class _HomeDashboardState extends State<HomeDashboard> {
       ),
     );
   }
-  void _showOnboarding() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      enableDrag: false,
-      builder: (context) => const OnboardingScreen(),
+  void _showOnboarding({bool isFirstLogin = true}) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) => OnboardingScreen(isFirstLogin: isFirstLogin),
+      ),
     );
+  }
+
+  Future<void> _reopenTutorial() async {
+    final supabase = context.read<SupabaseService>();
+    try {
+      await supabase.updateHasSeenOnboarding(true);
+    } catch (_) {
+      if (mounted) {
+        _showSnackBar(AppSnackBar.warning('Could not reset tutorial flag. Opening guide now.'));
+      }
+    }
+
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) => const OnboardingScreen(isFirstLogin: true),
+      ),
+    );
+
+    if (!mounted) return;
+    await _loadData();
   }
 
   Future<void> _loadPendingSessionCount() async {
@@ -352,7 +374,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
     await _loadPendingSessionCount();
 
     final connectivity = await _connectivity.checkConnectivity();
-    final online = await _hasUsableConnection(connectivity);
+    final online = await NetworkStatusService.hasUsableConnection(connectivity);
     if (!mounted) return;
     setState(() => _isOfflineMode = !online);
 
@@ -406,6 +428,95 @@ class _HomeDashboardState extends State<HomeDashboard> {
                 ),
                 const SizedBox(height: 8),
                 const Text('Theme mode'),
+                const SizedBox(height: 8),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Glove / Outdoor Mode'),
+                  subtitle: const Text('Larger controls for bright outdoor use'),
+                  value: _outdoorModeEnabled,
+                  onChanged: (enabled) {
+                    setSheetState(() => _outdoorModeEnabled = enabled);
+                    setState(() => _outdoorModeEnabled = enabled);
+                    _persistInteractionPrefs();
+                  },
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Keep screen on during jobs'),
+                  value: _keepScreenOnDuringJobs,
+                  onChanged: (enabled) {
+                    setSheetState(() => _keepScreenOnDuringJobs = enabled);
+                    setState(() => _keepScreenOnDuringJobs = enabled);
+                    _persistInteractionPrefs();
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('Re-watch Tutorial'),
+                  subtitle: const Text('Show first-time walkthrough again.'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _reopenTutorial();
+                  },
+                ),
+                const Divider(),
+                Text(
+                  'Help & Tutorial',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 6),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.route_outlined),
+                  title: Text('How do I set boundaries?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Tap Quick Setup - Walk Perimeter or Import Drone Map'),
+                    ),
+                  ],
+                ),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.tune_outlined),
+                  title: Text('What is Reach Mode?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Toggle for spraying edges/bushes from the side'),
+                    ),
+                  ],
+                ),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.place_outlined),
+                  title: Text('How do I mark ant hills?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Toggle Spot Treatment -> tap Mark Spot'),
+                    ),
+                  ],
+                ),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.cloud_off_outlined),
+                  title: Text('Offline mode?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Sessions save locally - sync when online'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
                 RadioListTile<ThemeMode>(
                   value: ThemeMode.system,
                   groupValue: themeController.themeMode,
@@ -649,8 +760,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
                 if (mounted) {
                   Navigator.pop(context);
-                  await supabase.syncCurrentUserActiveMapsCount();
-                  _loadData();
+                  await _loadData();
                 }
               } catch (e) {
                 if (!mounted) return;
@@ -984,6 +1094,12 @@ class _HomeDashboardState extends State<HomeDashboard> {
   }
 
   String _activeMapsLabel() {
+    final limit = _mapLimit;
+    if (limit != null) {
+      final maxLabel = limit.maxMaps < 0 ? 'Unlimited' : '${limit.maxMaps}';
+      return '${limit.activeCount}/$maxLabel';
+    }
+
     final active = _userProfile?.activeMapsCount ?? 0;
     final maxMaps = _userProfile?.getMaxMaps() ?? 1;
     if (maxMaps < 0) return '$active/Unlimited';
@@ -999,20 +1115,19 @@ class _HomeDashboardState extends State<HomeDashboard> {
   }
 
   bool _isAddMapDisabledByTier() {
+    final limit = _mapLimit;
+    if (limit != null) return !limit.allowed;
     final profile = _userProfile;
     if (profile == null) return false;
     return !profile.canAddNewMap();
   }
 
-  void _handleAddMapPressed() {
+  Future<void> _handleAddMapPressed() async {
     if (_isAddMapDisabledByTier()) {
-      final maxMaps = _userProfile?.getMaxMaps() ?? 1;
-      final limitLabel = maxMaps < 0 ? 'Unlimited' : '$maxMaps';
-      _showSnackBar(
-        AppSnackBar.warning(
-          'Map limit reached ($limitLabel). Upgrade for unlimited maps and a faster workflow.',
-        ),
-      );
+      final limit = _mapLimit ??
+          await context.read<SupabaseService>().checkCurrentUserMapLimit();
+      if (!mounted) return;
+      await _showMapLimitUpgradeDialog(limit);
       return;
     }
     _addMapAction();
@@ -1582,7 +1697,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
                       const SizedBox(height: 10),
                       TextField(
                         decoration: InputDecoration(
-                          hintText: 'Search by name or address…',
+                          hintText: 'Search by name or addressâ€¦',
                           prefixIcon: const Icon(Icons.search),
                           border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(14)),
@@ -1902,7 +2017,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
                     }),
                     const SizedBox(height: 4),
                     Text(
-                      'Tap to see full activity log →',
+                      'Tap to see full activity log â†’',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                             color: scheme.primary.withValues(alpha: 0.85),
                             fontWeight: FontWeight.w700,
@@ -1928,6 +2043,12 @@ class _HomeDashboardState extends State<HomeDashboard> {
   }
 
   bool _shouldShowUpgradeNudge() {
+    final limit = _mapLimit;
+    if (limit != null) {
+      if (limit.maxMaps < 0) return false;
+      return limit.activeCount >= (limit.maxMaps - 1);
+    }
+
     final profile = _userProfile;
     if (profile == null) return false;
 
@@ -1940,6 +2061,12 @@ class _HomeDashboardState extends State<HomeDashboard> {
   }
 
   String _upgradeNudgeMessage() {
+    final limit = _mapLimit;
+    if (limit != null) {
+      final maxLabel = limit.maxMaps < 0 ? 'Unlimited' : '${limit.maxMaps}';
+      return 'You\'re at ${limit.activeCount}/$maxLabel maps. Upgrade for unlimited maps?';
+    }
+
     final profile = _userProfile;
     if (profile == null) return 'Upgrade for higher map limits.';
 
@@ -3215,7 +3342,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
             title: 'Properties (${_properties.length})',
             trailing: Tooltip(
               message: addDisabled
-                  ? 'Map limit reached for your current tier'
+                  ? 'Max maps reached for your tier - upgrade?'
                   : 'Add a new property',
               child: FilledButton.icon(
                 onPressed: addDisabled ? null : _showAddPropertyDialog,
@@ -3227,7 +3354,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
           const SizedBox(height: 10),
           TextField(
             decoration: InputDecoration(
-              hintText: 'Search properties…',
+              hintText: 'Search propertiesâ€¦',
               prefixIcon: const Icon(Icons.search),
               border:
                   OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
@@ -3805,6 +3932,11 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Help / Tutorial',
+            onPressed: _reopenTutorial,
+            icon: const Icon(Icons.help_outline),
+          ),
           Stack(
             clipBehavior: Clip.none,
             children: [
@@ -4066,6 +4198,23 @@ class _HomeDashboardState extends State<HomeDashboard> {
     );
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

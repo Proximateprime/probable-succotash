@@ -11,7 +11,8 @@ class UserProfile {
   final double overlapThreshold;
   final String? stripeCustomerId;
   final DateTime createdAt;
-  final bool firstLogin; // True if user should see onboarding
+  final bool firstLogin; // Legacy flag
+  final bool hasSeenOnboarding; // True means show onboarding popup
 
   UserProfile({
     required this.id,
@@ -23,6 +24,7 @@ class UserProfile {
     this.stripeCustomerId,
     required this.createdAt,
     this.firstLogin = true,
+    this.hasSeenOnboarding = true,
   });
 
   static String normalizeTierValue(String rawTier) {
@@ -105,6 +107,7 @@ class UserProfile {
         'stripe_customer_id': stripeCustomerId,
         'created_at': createdAt.toIso8601String(),
         'first_login': firstLogin,
+        'has_seen_onboarding': hasSeenOnboarding,
       };
 
   static UserProfile fromJson(Map<String, dynamic> json) {
@@ -119,6 +122,8 @@ class UserProfile {
       createdAt: DateTime.parse(
           json['created_at'] as String? ?? DateTime.now().toIso8601String()),
       firstLogin: json['first_login'] as bool? ?? true,
+      hasSeenOnboarding: json['has_seen_onboarding'] as bool? ?? true,
     );
   }
 }
+

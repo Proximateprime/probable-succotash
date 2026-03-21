@@ -10,6 +10,8 @@ class Property {
   final List<Map<String, dynamic>>? exclusionZones; // GeoJSON polygons
   final List<Map<String, dynamic>>? specialZones; // Named special zones
   final Map<String, dynamic>? outerBoundary; // GeoJSON polygon
+  final String? boundaryMode; // walked_perimeter | property_only | between_property_and_walked
+  final double? outerBoundaryBufferFeet;
   final dynamic recommendedPath; // Optional guidance path (GeoJSON or list)
   final String? treatmentType;
   final DateTime? lastApplication;
@@ -33,6 +35,8 @@ class Property {
     this.exclusionZones,
     this.specialZones,
     this.outerBoundary,
+    this.boundaryMode,
+    this.outerBoundaryBufferFeet,
     this.recommendedPath,
     this.treatmentType,
     this.lastApplication,
@@ -63,6 +67,8 @@ class Property {
         'exclusion_zones': exclusionZones,
         'special_zones': specialZones,
         'outer_boundary': outerBoundary,
+        'boundary_mode': boundaryMode,
+        'outer_boundary_buffer_feet': outerBoundaryBufferFeet,
         'recommended_path': recommendedPath,
         'treatment_type': treatmentType,
         'last_application': lastApplication?.toIso8601String(),
@@ -113,6 +119,8 @@ class Property {
       exclusionZones: asMapList(json['exclusion_zones']),
       specialZones: asMapList(json['special_zones']),
       outerBoundary: asMap(json['outer_boundary']),
+      boundaryMode: json['boundary_mode'] as String?,
+      outerBoundaryBufferFeet: (json['outer_boundary_buffer_feet'] as num?)?.toDouble(),
       recommendedPath: json['recommended_path'],
       treatmentType: json['treatment_type'] as String?,
       lastApplication: asDate(json['last_application']),
@@ -129,3 +137,4 @@ class Property {
     );
   }
 }
+
