@@ -1,4 +1,4 @@
-// ignore_for_file: use_build_context_synchronously, deprecated_member_use, curly_braces_in_flow_control_structures, prefer_const_declarations
+﻿// ignore_for_file: use_build_context_synchronously, deprecated_member_use, curly_braces_in_flow_control_structures, prefer_const_declarations
 
 import 'dart:async';
 import 'dart:io';
@@ -96,6 +96,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
   static const String _swathPrefPrefix = 'tracking_swath_width_feet';
   static const String _tankPrefPrefix = 'tracking_tank_capacity_gallons';
   static const int _autoPauseInactivitySeconds = 180;
+  static const double _maxAcceptedAccuracyMeters = 16.0;
+  static const double _stationarySpeedThresholdMps = 0.85;
+  static const double _highPrecisionStationarySpeedThresholdMps = 0.6;
+  static const double _stationaryExtraMovementMeters = 3.0;
+  static const double _highPrecisionStationaryExtraMovementMeters = 1.8;
+  static const double _minAccuracyNoiseFloorMeters = 1.5;
+  static const double _maxAccuracyNoiseFloorMeters = 8.5;
 
   final List<TrackingPath> _paths = [];
   bool _isTracking = true;
@@ -131,6 +138,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
   DateTime? _lastMovementAt;
   bool _autoPausedByInactivity = false;
   bool _showOverlapHeatmap = true;
+  DateTime? _lastGpsErrorAt;
   final Connectivity _connectivity = Connectivity();
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool _isOfflineMode = false;
@@ -816,10 +824,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
         }
       },
       onError: (e) {
-        _showSnackBar(
-          AppSnackBar.error(
-              'GPS error. Check permissions and signal, then try again.'),
-        );
+        _handlePositionStreamError(e);
       },
     );
   }
@@ -841,9 +846,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
   }
 
   bool _shouldRecordPathPoint(Position position) {
-    if (_paths.isEmpty) {
-      return true;
-    }
+    final accuracy =
+        position.accuracy.isFinite ? position.accuracy.clamp(0.0, 100.0) : 100.0;
+
+    // Reject fixes too noisy -- prevents stationary drift.
+    if (accuracy > _maxAcceptedAccuracyMeters) return false;
+
+    if (_paths.isEmpty) return true;
 
     final last = _paths.last;
     final movedMeters = Geolocator.distanceBetween(
@@ -853,10 +862,36 @@ class _TrackingScreenState extends State<TrackingScreen> {
       position.longitude,
     );
 
-    final accuracyNoiseFloor =
-        position.accuracy.isFinite ? position.accuracy.clamp(1.5, 8.0) : 3.0;
+    final elapsedSeconds =
+        math.max(1, DateTime.now().difference(last.timestamp).inSeconds);
 
-    return movedMeters >= accuracyNoiseFloor;
+    final speedFromSensor = (position.speed.isFinite && position.speed > 0)
+        ? position.speed
+        : 0.0;
+    final speedMps = math.max(speedFromSensor, movedMeters / elapsedSeconds);
+
+    final speedThreshold = _highAccuracyGnssEnabled
+        ? _highPrecisionStationarySpeedThresholdMps
+        : _stationarySpeedThresholdMps;
+    final extraGuard = _highAccuracyGnssEnabled
+        ? _highPrecisionStationaryExtraMovementMeters
+        : _stationaryExtraMovementMeters;
+
+    final likelyStationary = speedMps < speedThreshold;
+    final noiseFloor = accuracy
+        .clamp(_minAccuracyNoiseFloorMeters, _maxAccuracyNoiseFloorMeters)
+        .toDouble();
+    return movedMeters >= noiseFloor + (likelyStationary ? extraGuard : 0);
+  }
+
+  void _handlePositionStreamError(Object _) {
+    final now = DateTime.now();
+    if (_lastGpsErrorAt != null &&
+        now.difference(_lastGpsErrorAt!).inSeconds < 12) return;
+    _lastGpsErrorAt = now;
+    _showSnackBar(AppSnackBar.error(
+      'GPS signal unstable. Move to open sky or check location permissions.',
+    ));
   }
 
   Future<void> _persistOfflineDraft({bool force = false}) async {

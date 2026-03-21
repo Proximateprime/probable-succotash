@@ -52,7 +52,8 @@ class MapService {
       locationSettings: LocationSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: distanceFilterMeters,
-        timeLimit: Duration(seconds: intervalSeconds),
+        // Keep the stream alive continuously; intervalSeconds is handled by
+        // upstream filtering and platform cadence defaults.
       ),
     );
   }
