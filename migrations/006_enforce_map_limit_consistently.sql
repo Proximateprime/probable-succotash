@@ -1,4 +1,4 @@
--- Migration: Authoritative map/property limit enforcement
+﻿-- Migration: Authoritative map/property limit enforcement
 -- Enforces limits consistently using profiles.active_maps_count + tier.
 
 CREATE OR REPLACE FUNCTION public.tier_max_maps(input_tier TEXT)
@@ -32,34 +32,40 @@ RETURNS TABLE (
 ) AS $$
 DECLARE
   current_uid UUID := auth.uid();
+  current_count INTEGER;
+  current_tier TEXT;
+  tier_limit INTEGER;
 BEGIN
   IF current_uid IS NULL THEN
     RAISE EXCEPTION 'Not authenticated';
   END IF;
 
+  SELECT
+    COALESCE(p.active_maps_count, 0),
+    COALESCE(p.tier, 'hobbyist'),
+    public.tier_max_maps(p.tier)
+  INTO current_count, current_tier, tier_limit
+  FROM public.profiles p
+  WHERE p.id = current_uid;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Profile not found';
+  END IF;
+
   RETURN QUERY
-  WITH profile AS (
-    SELECT
-      p.active_maps_count AS current_count,
-      p.tier AS current_tier,
-      public.tier_max_maps(p.tier) AS tier_limit
-    FROM public.profiles p
-    WHERE p.id = current_uid
-  )
   SELECT
     CASE
-      WHEN profile.tier_limit < 0 THEN TRUE
-      ELSE profile.current_count < profile.tier_limit
+      WHEN tier_limit < 0 THEN TRUE
+      ELSE current_count < tier_limit
     END AS allowed,
-    profile.current_count,
-    profile.tier_limit,
-    profile.current_tier,
+    current_count,
+    tier_limit,
+    current_tier,
     CASE
-      WHEN profile.tier_limit < 0 THEN 'Unlimited maps allowed.'
-      WHEN profile.current_count >= profile.tier_limit THEN 'Max maps reached - upgrade?'
+      WHEN tier_limit < 0 THEN 'Unlimited maps allowed.'
+      WHEN current_count >= tier_limit THEN 'Max maps reached - upgrade?'
       ELSE 'Map available.'
-    END AS message
-  FROM profile;
+    END AS message;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 

@@ -1,4 +1,4 @@
-create or replace function public.check_user_can_add_map(user_id uuid)
+﻿create or replace function public.check_user_can_add_map(user_id uuid)
 returns table (
   can_add boolean,
   current_count integer,
@@ -8,6 +8,9 @@ returns table (
 ) as $$
 declare
   requested_uid uuid := user_id;
+  resolved_count integer;
+  resolved_tier text;
+  resolved_limit integer;
 begin
   if auth.uid() is null then
     raise exception 'Not authenticated';
@@ -21,29 +24,32 @@ begin
     raise exception 'Forbidden';
   end if;
 
+  select
+    coalesce(p.active_maps_count, 0),
+    coalesce(p.tier, 'hobbyist'),
+    public.tier_max_maps(p.tier)
+  into resolved_count, resolved_tier, resolved_limit
+  from public.profiles p
+  where p.id = requested_uid;
+
+  if not found then
+    raise exception 'Profile not found';
+  end if;
+
   return query
-  with profile as (
-    select
-      coalesce(p.active_maps_count, 0) as current_count,
-      coalesce(p.tier, 'hobbyist') as current_tier,
-      public.tier_max_maps(p.tier) as tier_limit
-    from public.profiles p
-    where p.id = requested_uid
-  )
   select
     case
-      when profile.tier_limit < 0 then true
-      else profile.current_count < profile.tier_limit
+      when resolved_limit < 0 then true
+      else resolved_count < resolved_limit
     end as can_add,
-    profile.current_count,
-    profile.tier_limit,
-    profile.current_tier,
+    resolved_count,
+    resolved_limit,
+    resolved_tier,
     case
-      when profile.tier_limit < 0 then 'Unlimited maps allowed.'
-      when profile.current_count >= profile.tier_limit then 'Max maps reached for your tier - upgrade?'
+      when resolved_limit < 0 then 'Unlimited maps allowed.'
+      when resolved_count >= resolved_limit then 'Max maps reached for your tier - upgrade?'
       else 'Map available.'
-    end as message
-  from profile;
+    end as message;
 end;
 $$ language plpgsql security definer set search_path = public;
 

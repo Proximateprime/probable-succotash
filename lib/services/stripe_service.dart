@@ -1,64 +1,94 @@
-import 'package:logger/logger.dart';
+﻿import 'package:logger/logger.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/plan_model.dart';
 
 class StripePaymentService {
   final Logger _logger = Logger();
 
-  static const String stripePlanIds = 'plan_config_here'; // Prod: Configure with Stripe dashboard
-
-  /// Initiate checkout for a given plan and billing period
+  /// Calls the Supabase Edge Function to create a Stripe Checkout Session and
+  /// opens the resulting URL in the device browser.
+  ///
+  /// Returns true if the URL was launched successfully.
+  /// In beta mode (enableFreeBetaPlanActivation = true) this is bypassed.
   Future<bool> initiateCheckout({
     required PlanType planType,
     required BillingPeriod billingPeriod,
     required String userEmail,
     required String userId,
   }) async {
+    final plan = Plan.getPlanByType(planType);
+    if (plan == null) {
+      _logger.e('Invalid plan type: $planType');
+      return false;
+    }
+
+    final price = plan.getPrice(billingPeriod);
+    if (price <= 0) {
+      _logger.e('Invalid price for plan: $planType, period: $billingPeriod');
+      return false;
+    }
+
+    _logger.i(
+      'Initiating Stripe checkout: ${plan.name} - \$$price ($billingPeriod)',
+    );
+
     try {
-      final plan = Plan.getPlanByType(planType);
-      if (plan == null) {
-        _logger.e('Invalid plan type: $planType');
-        return false;
-      }
+      final client = Supabase.instance.client;
 
-      final price = plan.getPrice(billingPeriod);
-      if (price <= 0) {
-        _logger.e('Invalid price for plan: $planType, period: $billingPeriod');
-        return false;
-      }
-
-      _logger.i(
-        'Starting checkout: ${plan.name} - \$$price ($billingPeriod), user: $userEmail',
+      final response = await client.functions.invoke(
+        'create-checkout-session',
+        body: {
+          'tier': _tierFromPlanType(planType),
+          'billing_period': billingPeriod == BillingPeriod.monthly
+              ? 'monthly'
+              : 'lifetime',
+          'user_email': userEmail,
+          'user_id': userId,
+        },
       );
 
-      // TODO: Integrate actual Stripe checkout session creation
-      // For now, this logs the intent. In production:
-      // 1. Create Stripe Checkout Session via backend API
-      // 2. Redirect to checkout.stripe.com/{session_id}
-      // 3. Handle success callback → update profiles.tier and role
+      if (response.status != 200) {
+        final errorData = response.data;
+        final errorMsg = errorData is Map ? errorData['error'] : '$errorData';
+        _logger.e('Checkout session creation failed: $errorMsg');
+        return false;
+      }
 
-      // Mock success for demo
-      await Future.delayed(const Duration(milliseconds: 500));
+      final data = response.data as Map<String, dynamic>;
+      final url = data['url'] as String?;
 
-      _logger.i('Checkout initiated successfully');
+      if (url == null || url.isEmpty) {
+        _logger.e('No checkout URL returned from Edge Function');
+        return false;
+      }
+
+      final uri = Uri.parse(url);
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        _logger.e('Could not launch Stripe checkout URL: $url');
+        return false;
+      }
+
+      _logger.i('Stripe checkout opened in browser');
       return true;
     } catch (e) {
-      _logger.e('Checkout initiation error: $e');
+      _logger.e('Stripe checkout error: $e');
       return false;
     }
   }
 
-  /// Process webhook from Stripe (payment success)
-  /// In production, this would be called from a backend endpoint
-  Future<void> handlePaymentSuccess({
-    required String userId,
-    required PlanType planType,
-    required BillingPeriod billingPeriod,
-  }) async {
-    try {
-      _logger.i('Payment successful for user: $userId, plan: $planType');
-      // TODO: Call Supabase to update profiles.tier
-    } catch (e) {
-      _logger.e('Payment processing error: $e');
+  String _tierFromPlanType(PlanType planType) {
+    switch (planType) {
+      case PlanType.hobbyist:
+        return 'hobbyist';
+      case PlanType.soloProfessional:
+        return 'solo_professional';
+      case PlanType.premiumSolo:
+        return 'premium_solo';
+      case PlanType.largeIndividual:
+        return 'individual_large_land';
+      case PlanType.corporate:
+        return 'corporate';
     }
   }
 }

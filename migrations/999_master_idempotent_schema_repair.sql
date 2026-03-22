@@ -1,4 +1,4 @@
--- 999_master_idempotent_schema_repair.sql
+﻿-- 999_master_idempotent_schema_repair.sql
 -- One-file safe schema repair for SprayMap Pro.
 -- Idempotent: keeps existing data and only adds missing objects.
 
@@ -224,34 +224,40 @@ returns table (
 ) as $$
 declare
   current_uid uuid := auth.uid();
+  current_count integer;
+  current_tier text;
+  tier_limit integer;
 begin
   if current_uid is null then
     raise exception 'Not authenticated';
   end if;
 
+  select
+    coalesce(p.active_maps_count, 0),
+    coalesce(p.tier, 'hobbyist'),
+    public.tier_max_maps(p.tier)
+  into current_count, current_tier, tier_limit
+  from public.profiles p
+  where p.id = current_uid;
+
+  if not found then
+    raise exception 'Profile not found';
+  end if;
+
   return query
-  with profile as (
-    select
-      coalesce(p.active_maps_count, 0) as current_count,
-      coalesce(p.tier, 'hobbyist') as current_tier,
-      public.tier_max_maps(p.tier) as tier_limit
-    from public.profiles p
-    where p.id = current_uid
-  )
   select
     case
-      when profile.tier_limit < 0 then true
-      else profile.current_count < profile.tier_limit
+      when tier_limit < 0 then true
+      else current_count < tier_limit
     end as allowed,
-    profile.current_count,
-    profile.tier_limit,
-    profile.current_tier,
+    current_count,
+    tier_limit,
+    current_tier,
     case
-      when profile.tier_limit < 0 then 'Unlimited maps allowed.'
-      when profile.current_count >= profile.tier_limit then 'Max maps reached - upgrade?'
+      when tier_limit < 0 then 'Unlimited maps allowed.'
+      when current_count >= tier_limit then 'Max maps reached - upgrade?'
       else 'Map available.'
-    end as message
-  from profile;
+    end as message;
 end;
 $$ language plpgsql security definer set search_path = public;
 
