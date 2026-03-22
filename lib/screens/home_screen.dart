@@ -57,6 +57,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
 
       final profile = await supabase.ensureCurrentUserProfile();
+      if (!mounted) return;
       final localStorage = context.read<LocalStorageService>();
       final onboardingDismissed = localStorage.isOnboardingDismissed(userId);
       final properties = await supabase.fetchUserProperties(

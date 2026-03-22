@@ -1,4 +1,4 @@
-﻿// ignore_for_file: use_build_context_synchronously, deprecated_member_use, curly_braces_in_flow_control_structures, prefer_const_declarations
+// ignore_for_file: use_build_context_synchronously, deprecated_member_use, curly_braces_in_flow_control_structures, prefer_const_declarations
 
 import 'dart:async';
 import 'dart:io';
@@ -1241,6 +1241,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
     );
   }
 
+  // ignore: unused_element
   Future<void> _exportForPostProcessing() async {
     try {
       final content = _rawGnssObsContent ?? _buildObsContent();
@@ -1573,6 +1574,7 @@ Future<void> _stopTracking() async {
     }
   }
 
+  // ignore: unused_element
   Future<Map<String, dynamic>?> _showTreatmentChecklistDialog() async {
     var coveredBareSoil = false;
     var avoidedGreenAreas = false;
