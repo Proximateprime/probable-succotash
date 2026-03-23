@@ -30,6 +30,19 @@
       "problemMatcher": []
     },
     {
+      "label": "web: build github",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ".\\tools\\build_github_web.ps1"
+      ],
+      "isBackground": false,
+      "problemMatcher": []
+    },
+    {
       "label": "web: build cloudflare",
       "type": "shell",
       "command": "powershell",

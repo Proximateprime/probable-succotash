@@ -29,8 +29,21 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Compute base href
+        id: base_href
+        shell: bash
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          REPO_LOWER="${REPO,,}"
+          if [ "$REPO_LOWER" = "$OWNER.github.io" ]; then
+            echo "value=/" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=/$REPO/" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build web
-        run: flutter build web --release --base-href "/probable-succotash/"
+        run: flutter build web --release --base-href "${{ steps.base_href.outputs.value }}"
 
       - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
