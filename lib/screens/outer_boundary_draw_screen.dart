@@ -277,8 +277,7 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
             children: [
               TileLayer(
                 urlTemplate:
-                    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                subdomains: const ['a', 'b', 'c'],
+                    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
               ),
               if (closedBoundary.length >= 3)
                 PolygonLayer(
@@ -428,3 +427,4 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
     );
   }
 }
+

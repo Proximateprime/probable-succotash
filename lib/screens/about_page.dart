@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../widgets/app_ui.dart';
+import 'bug_report_screen.dart';
 import 'login_screen.dart';
 import 'plan_selection_screen.dart';
 
@@ -482,6 +483,25 @@ class AboutPage extends StatelessWidget {
               label: const Text('Sign In'),
             ),
           ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const BugReportScreen(),
+                  ),
+                );
+              },
+              icon: Icon(Icons.bug_report_outlined, color: colorScheme.error),
+              label: Text(
+                'Report a Bug',
+                style: TextStyle(color: colorScheme.error),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -529,3 +549,5 @@ class _SolutionItem {
   final IconData icon;
   final String title;
 }
+
+

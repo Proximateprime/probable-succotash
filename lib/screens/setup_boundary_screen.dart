@@ -32,7 +32,7 @@ class SetupBoundaryScreen extends StatefulWidget {
 
 class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
   static const String _satelliteUrlTemplate =
-      'https://mt.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
   final MapController _mapController = MapController();
   final Distance _distance = const Distance();
 
@@ -1954,6 +1954,7 @@ class _ExclusionZoneDraft {
   final Color color;
   final String? note;
 }
+
 
 
 

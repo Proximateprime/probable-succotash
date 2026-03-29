@@ -376,8 +376,7 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
             children: [
               TileLayer(
                 urlTemplate:
-                    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                subdomains: const ['a', 'b', 'c'],
+                    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
               ),
               // Render completed zones as red polygons
               if (_completedZones.isNotEmpty)
@@ -575,3 +574,4 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
     super.dispose();
   }
 }
+

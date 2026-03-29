@@ -1,7 +1,5 @@
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:http/http.dart' as http;
-
-import '../constants/app_constants.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class NetworkStatusService {
   static DateTime? _lastConfirmedOnlineAt;
@@ -54,30 +52,23 @@ class NetworkStatusService {
   }
 
   static Future<bool> _probeSupabase(Duration timeout) async {
-    final uris = <Uri>[
-      Uri.parse('${AppConstants.supabaseUrl}/auth/v1/settings'),
-      Uri.parse('${AppConstants.supabaseUrl}/rest/v1/'),
-    ];
-
-    for (final uri in uris) {
-      try {
-        final response = await http.get(
-          uri,
-          headers: {
-            'apikey': AppConstants.supabaseAnonKey,
-            'Authorization': 'Bearer ${AppConstants.supabaseAnonKey}',
-            'Accept': 'application/json',
-          },
-        ).timeout(timeout);
-
-        if (response.statusCode > 0 && response.statusCode < 500) {
-          return true;
-        }
-      } catch (_) {
-        continue;
-      }
+    try {
+      // April 2026 hardening: avoid direct anon calls to PostgREST root (/rest/v1/).
+      // We use the Supabase client API with a lightweight table query instead.
+      await Supabase.instance.client
+          .from('profiles')
+          .select('id')
+          .limit(1)
+          .timeout(timeout);
+      return true;
+    } on PostgrestException {
+      // 4xx from PostgREST still confirms network reachability.
+      return true;
+    } on AuthException {
+      // Auth endpoint reachable but session/credentials invalid.
+      return true;
+    } catch (_) {
+      return false;
     }
-
-    return false;
   }
 }

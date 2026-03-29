@@ -1,4 +1,4 @@
-﻿-- 999_master_idempotent_schema_repair.sql
+-- 999_master_idempotent_schema_repair.sql
 -- One-file safe schema repair for SprayMap Pro.
 -- Idempotent: keeps existing data and only adds missing objects.
 
@@ -562,4 +562,44 @@ begin
 end
 $$;
 
+-- -------------------------
+-- Bug Reports table
+-- -------------------------
+create table if not exists public.bug_reports (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  user_email text,
+  category text not null default 'other',
+  title text not null,
+  description text not null,
+  app_version text,
+  platform text,
+  created_at timestamptz default now()
+);
+
+alter table if exists public.bug_reports enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'bug_reports' and policyname = 'users_insert_own_bug_reports'
+  ) then
+    execute '
+      create policy users_insert_own_bug_reports
+      on public.bug_reports
+      for insert
+      with check (
+        auth.uid() = user_id
+        or (auth.uid() is null and user_id is null)
+      )
+    ';
+  end if;
+end
+$$;
+
 commit;
+
+
+
+
