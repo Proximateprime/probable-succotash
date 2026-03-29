@@ -303,25 +303,15 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
                       .map(
                         (entry) => Marker(
                           point: entry.value,
-                          width: 20,
-                          height: 20,
+                          width: 4,
+                          height: 4,
                           child: Container(
                             decoration: BoxDecoration(
                               color: Colors.white,
                               shape: BoxShape.circle,
                               border: Border.all(
                                 color: const Color(0xFF2E7D32),
-                                width: 1.8,
-                              ),
-                            ),
-                            child: Center(
-                              child: Text(
-                                '${entry.key + 1}',
-                                style: const TextStyle(
-                                  color: Color(0xFF2E7D32),
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 8,
-                                ),
+                                width: 1,
                               ),
                             ),
                           ),
@@ -402,8 +392,8 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
                       onPressed: _isSaving ? null : _saveBoundary,
                       icon: _isSaving
                           ? const SizedBox(
-                              width: 20,
-                              height: 20,
+                              width: 4,
+                              height: 4,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
                                 valueColor:
@@ -427,6 +417,9 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
     );
   }
 }
+
+
+
 
 
 

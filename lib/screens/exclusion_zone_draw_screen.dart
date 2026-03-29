@@ -415,25 +415,15 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
                       .map(
                         (entry) => Marker(
                           point: entry.value,
-                          width: 20,
-                          height: 20,
+                          width: 4,
+                          height: 4,
                           child: Container(
                             decoration: BoxDecoration(
                               color: Colors.white,
                               shape: BoxShape.circle,
                               border: Border.all(
                                 color: const Color(0xFF00897B),
-                                width: 1.8,
-                              ),
-                            ),
-                            child: Center(
-                              child: Text(
-                                '${entry.key + 1}',
-                                style: const TextStyle(
-                                  color: Color(0xFF00695C),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 8,
-                                ),
+                                width: 1,
                               ),
                             ),
                           ),
@@ -544,8 +534,8 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
                       onPressed: _isSaving ? null : _saveZones,
                       icon: _isSaving
                           ? const SizedBox(
-                              width: 20,
-                              height: 20,
+                              width: 4,
+                              height: 4,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
                                 valueColor:
@@ -574,6 +564,9 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
     super.dispose();
   }
 }
+
+
+
 
 
 
