@@ -32,7 +32,7 @@ class SetupBoundaryScreen extends StatefulWidget {
 
 class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
   static const String _satelliteUrlTemplate =
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+      'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}';
   final MapController _mapController = MapController();
   final Distance _distance = const Distance();
 
@@ -1513,9 +1513,9 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
                     polygons: [
                       Polygon(
                         points: _outerBoundary,
-                        borderColor: const Color(0xFFFBC02D),
+                        borderColor: const Color(0xFF2E7D32),
                         borderStrokeWidth: 2.4,
-                        color: const Color(0xFFFBC02D).withValues(alpha: 0.15),
+                        color: const Color(0xFF2E7D32).withValues(alpha: 0.14),
                         isFilled: true,
                       ),
                     ],
@@ -1954,6 +1954,7 @@ class _ExclusionZoneDraft {
   final Color color;
   final String? note;
 }
+
 
 
 

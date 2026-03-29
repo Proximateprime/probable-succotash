@@ -171,7 +171,7 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
           Polyline(
             points: [points[i], points[i + 1]],
             strokeWidth: 3,
-            color: const Color(0xFFFBC02D),
+            color: const Color(0xFF2E7D32),
           ),
         );
       }
@@ -277,15 +277,15 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
             children: [
               TileLayer(
                 urlTemplate:
-                    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                    'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
               ),
               if (closedBoundary.length >= 3)
                 PolygonLayer(
                   polygons: [
                     Polygon(
                       points: closedBoundary,
-                      color: const Color(0xFFFBC02D).withValues(alpha: 0.18),
-                      borderColor: const Color(0xFFFBC02D),
+                      color: const Color(0xFF2E7D32).withValues(alpha: 0.16),
+                      borderColor: const Color(0xFF2E7D32),
                       borderStrokeWidth: 2,
                       isFilled: true,
                     ),
@@ -303,24 +303,24 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
                       .map(
                         (entry) => Marker(
                           point: entry.value,
-                          width: 28,
-                          height: 28,
+                          width: 20,
+                          height: 20,
                           child: Container(
                             decoration: BoxDecoration(
-                              color: const Color(0xFFFBC02D),
+                              color: Colors.white,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: Colors.black.withValues(alpha: 0.7),
-                                width: 1,
+                                color: const Color(0xFF2E7D32),
+                                width: 1.8,
                               ),
                             ),
                             child: Center(
                               child: Text(
                                 '${entry.key + 1}',
                                 style: const TextStyle(
-                                  color: Colors.black,
+                                  color: Color(0xFF2E7D32),
                                   fontWeight: FontWeight.w700,
-                                  fontSize: 9,
+                                  fontSize: 8,
                                 ),
                               ),
                             ),
@@ -413,8 +413,8 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
                           : const Icon(Icons.save),
                       label: const Text('Save Boundary'),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFFBC02D),
-                        foregroundColor: Colors.black,
+                        backgroundColor: const Color(0xFF2E7D32),
+                        foregroundColor: Colors.white,
                       ),
                     ),
                   ),
@@ -427,4 +427,10 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
     );
   }
 }
+
+
+
+
+
+
 

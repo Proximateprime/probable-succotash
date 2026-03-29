@@ -376,7 +376,7 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
             children: [
               TileLayer(
                 urlTemplate:
-                    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                    'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
               ),
               // Render completed zones as red polygons
               if (_completedZones.isNotEmpty)
@@ -399,9 +399,9 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
                   polygons: [
                     Polygon(
                       points: _currentPolygon,
-                      color: Colors.orange.withValues(alpha: 0.3),
+                      color: const Color(0xFF26A69A).withValues(alpha: 0.20),
                       borderStrokeWidth: 2,
-                      borderColor: Colors.orange,
+                      borderColor: const Color(0xFF00897B),
                       isFilled: true,
                     ),
                   ],
@@ -415,24 +415,24 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
                       .map(
                         (entry) => Marker(
                           point: entry.value,
-                          width: 40,
-                          height: 40,
+                          width: 20,
+                          height: 20,
                           child: Container(
                             decoration: BoxDecoration(
-                              color: Colors.orange,
+                              color: Colors.white,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: Colors.orangeAccent,
-                                width: 2,
+                                color: const Color(0xFF00897B),
+                                width: 1.8,
                               ),
                             ),
                             child: Center(
                               child: Text(
                                 '${entry.key + 1}',
                                 style: const TextStyle(
-                                  color: Colors.white,
+                                  color: Color(0xFF00695C),
                                   fontWeight: FontWeight.bold,
-                                  fontSize: 10,
+                                  fontSize: 8,
                                 ),
                               ),
                             ),
@@ -574,4 +574,8 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
     super.dispose();
   }
 }
+
+
+
+
 
