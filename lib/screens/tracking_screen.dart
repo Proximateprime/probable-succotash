@@ -163,6 +163,12 @@ class _TrackingScreenState extends State<TrackingScreen> {
   _SessionSummary? _sessionSummary;
   // Rolling GPS smoothing buffer — keeps the last N raw positions for averaging.
   final List<LatLng> _gpsSmoothingBuffer = [];
+  // Spot treatment mode
+  bool _spotTreatmentMode = false;
+  double _spotRadiusFeet = 4.0;
+  final List<_SpotTreatment> _spotTreatments = [];
+  // Points of interest
+  final List<_PoiMarker> _poiMarkers = [];
   double? _tankCapacityGallons;
   double? _applicationRatePerAcre;
   String _applicationRateUnit = 'gal';
@@ -204,6 +210,134 @@ class _TrackingScreenState extends State<TrackingScreen> {
             .reduce((a, b) => a + b) /
         _gpsSmoothingBuffer.length;
     return LatLng(avgLat, avgLng);
+  }
+
+  // ── Spot Treatment ────────────────────────────────────────────────────────
+
+  void _markSpot() {
+    if (_latitude == 0 && _longitude == 0) {
+      _showSnackBar(AppSnackBar.warning('Waiting for a GPS fix.'));
+      return;
+    }
+    setState(() {
+      _spotTreatments.add(_SpotTreatment(
+        center: LatLng(_latitude, _longitude),
+        radiusFeet: _spotRadiusFeet,
+        label: 'Spot ${_spotTreatments.length + 1}',
+      ));
+    });
+    _showSnackBar(AppSnackBar.success(
+      'Spot ${_spotTreatments.length} marked '
+      '(${_spotRadiusFeet.toStringAsFixed(0)} ft radius)',
+    ));
+  }
+
+  // ── Points of Interest ────────────────────────────────────────────────────
+
+  Future<void> _showPoiPicker() async {
+    if (_latitude == 0 && _longitude == 0) {
+      _showSnackBar(AppSnackBar.warning('Waiting for a GPS fix.'));
+      return;
+    }
+
+    const presets = [
+      ('ant_hill', 'Ant Hill', Icons.bug_report_outlined),
+      ('large_rock', 'Large Rock', Icons.landscape_outlined),
+      ('wasp_nest', 'Wasp Nest', Icons.hexagon_outlined),
+      ('bare_spot', 'Bare Spot', Icons.circle_outlined),
+      ('weed_patch', 'Weed Patch', Icons.grass_outlined),
+    ];
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Add Point of Interest',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                ...presets.map((preset) {
+                  final (_, label, icon) = preset;
+                  return _PoiPresetChip(
+                    label: label,
+                    icon: icon,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _addPoi(
+                          LatLng(_latitude, _longitude), label, icon);
+                    },
+                  );
+                }),
+                _PoiPresetChip(
+                  label: 'Custom',
+                  icon: Icons.add_circle_outline,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final customLabel = await _promptCustomPoiLabel();
+                    if (customLabel == null || customLabel.isEmpty) return;
+                    _addPoi(LatLng(_latitude, _longitude), customLabel,
+                        Icons.place_outlined);
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<String?> _promptCustomPoiLabel() async {
+    final ctrl = TextEditingController();
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Custom POI Label'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            hintText: 'e.g. Irrigation head, Sprinkler',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    return result;
+  }
+
+  void _addPoi(LatLng point, String label, IconData icon) {
+    setState(() {
+      _poiMarkers.add(_PoiMarker(point: point, label: label, icon: icon));
+    });
+    _showSnackBar(AppSnackBar.success('POI marked: $label'));
   }
 
   Future<void> _initializeTracking() async {
@@ -3046,6 +3180,83 @@ Future<void> _stopTracking() async {
                     setState(() => _showOverlapHeatmap = enabled);
                   },
           ),
+          // ── Spot Treatment Mode ─────────────────────────────────────────
+          const Divider(color: Colors.white24, height: 20),
+          SwitchListTile.adaptive(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Text(
+              'Spot Treatment Mode',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            subtitle: Text(
+              _spotTreatmentMode
+                  ? '${_spotTreatments.length} spot${_spotTreatments.length != 1 ? 's' : ''} marked'
+                  : 'Mark individual treatment spots on the map',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Colors.white70,
+                  ),
+            ),
+            value: _spotTreatmentMode,
+            onChanged: _isSessionEnded
+                ? null
+                : (v) => setState(() => _spotTreatmentMode = v),
+          ),
+          if (_spotTreatmentMode) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isSessionEnded ? null : _markSpot,
+                icon: const Icon(Icons.add_location_alt_outlined),
+                label: Text(
+                  'Mark Spot  ·  ${_spotRadiusFeet.toStringAsFixed(0)} ft radius',
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6A1B9A),
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size.fromHeight(52),
+                  textStyle: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Text(
+                  '1 ft',
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelSmall
+                      ?.copyWith(color: Colors.white70),
+                ),
+                Expanded(
+                  child: Slider(
+                    value: _spotRadiusFeet,
+                    min: 1.0,
+                    max: 10.0,
+                    divisions: 9,
+                    label: '${_spotRadiusFeet.toStringAsFixed(0)} ft',
+                    activeColor: const Color(0xFF6A1B9A),
+                    onChanged: _isSessionEnded
+                        ? null
+                        : (v) => setState(() => _spotRadiusFeet = v),
+                  ),
+                ),
+                Text(
+                  '10 ft',
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelSmall
+                      ?.copyWith(color: Colors.white70),
+                ),
+              ],
+            ),
+          ],
           Tooltip(
             message: _isRawGnssSupported
                 ? 'Capture raw GNSS measurements and higher cadence GPS updates.'
@@ -3772,6 +3983,74 @@ Future<void> _stopTracking() async {
                               ),
                             ],
                           ),
+                        // Spot treatment circles
+                        if (_spotTreatments.isNotEmpty)
+                          CircleLayer(
+                            circles: _spotTreatments
+                                .map(
+                                  (spot) => CircleMarker(
+                                    point: spot.center,
+                                    radius: spot.radiusFeet * 0.3048,
+                                    color: const Color(0xFF6A1B9A)
+                                        .withValues(alpha: 0.28),
+                                    borderColor: const Color(0xFF6A1B9A),
+                                    borderStrokeWidth: 2,
+                                    useRadiusInMeter: true,
+                                  ),
+                                )
+                                .toList(growable: false),
+                          ),
+                        // POI markers
+                        if (_poiMarkers.isNotEmpty)
+                          MarkerLayer(
+                            markers: _poiMarkers
+                                .map(
+                                  (poi) => Marker(
+                                    point: poi.point,
+                                    width: 52,
+                                    height: 52,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(5),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFFF8F00),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: Colors.white,
+                                              width: 1.5,
+                                            ),
+                                          ),
+                                          child: Icon(poi.icon,
+                                              size: 14,
+                                              color: Colors.white),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 4, vertical: 1),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black
+                                                .withValues(alpha: 0.65),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            poi.label,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 8,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                )
+                                .toList(growable: false),
+                          ),
                       ],
                     ),
                   ),
@@ -3831,6 +4110,19 @@ Future<void> _stopTracking() async {
                           ? Icons.explore_off_outlined
                           : Icons.explore,
                     ),
+                  ),
+                ),
+                // POI quick-mark button
+                Positioned(
+                  right: 16,
+                  top: MediaQuery.of(context).padding.top + 116,
+                  child: FloatingActionButton.small(
+                    heroTag: 'poi_btn',
+                    onPressed: _isSessionEnded ? null : _showPoiPicker,
+                    backgroundColor: const Color(0xCCFF8F00),
+                    foregroundColor: Colors.white,
+                    tooltip: 'Add Point of Interest',
+                    child: const Icon(Icons.place_outlined),
                   ),
                 ),
                 Align(
@@ -3936,6 +4228,63 @@ class _OverlapHeatCell {
   final LatLng center;
   final int passes;
 }
+
+// ── Spot treatment data ───────────────────────────────────────────────────────
+
+class _SpotTreatment {
+  const _SpotTreatment({
+    required this.center,
+    required this.radiusFeet,
+    required this.label,
+  });
+
+  final LatLng center;
+  final double radiusFeet;
+  final String label;
+}
+
+// ── Point-of-interest data ────────────────────────────────────────────────────
+
+class _PoiMarker {
+  const _PoiMarker({
+    required this.point,
+    required this.label,
+    required this.icon,
+  });
+
+  final LatLng point;
+  final String label;
+  final IconData icon;
+}
+
+// ── POI preset chip widget ────────────────────────────────────────────────────
+
+class _PoiPresetChip extends StatelessWidget {
+  const _PoiPresetChip({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: Colors.white,
+        side: BorderSide(color: Colors.white.withOpacity(0.4)),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      ),
+      onPressed: onTap,
+      icon: Icon(icon, size: 18),
+      label: Text(label),
+    );
+  }
+}
+
 
 
 

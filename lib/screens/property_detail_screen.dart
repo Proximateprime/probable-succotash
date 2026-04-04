@@ -43,7 +43,6 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
   bool _isAssigning = false;
   bool _isGeneratingRecommendedPath = false;
   double _currentSwathWidthFeet = RecommendedPathService.defaultSwathWidthFeet;
-  List<LatLng> _boundaryPoints = [];
   List<Polygon> _exclusionPolygons = [];
   List<_ExclusionNotePin> _exclusionNotePins = [];
   List<Polyline> _outerBoundaryDashed = [];
@@ -552,9 +551,11 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
   void _prepareMapLayers() {
     final mapPoints = _extractGeoPoints(_property.mapGeojson);
     final outerPoints = _extractPolygonVertices(_property.outerBoundary);
-    final previewPoints = mapPoints.isNotEmpty ? mapPoints : outerPoints;
+    // Prefer outer boundary for the viewport so the preview is tightly zoomed
+    // to the spray zone rather than the full drone-map extent.
+    final previewPoints =
+        outerPoints.isNotEmpty ? outerPoints : mapPoints;
 
-    _boundaryPoints = previewPoints;
     _mapBounds = _buildBounds(previewPoints);
     _exclusionPolygons = _buildExclusionPolygons(_property.exclusionZones);
     _exclusionNotePins = _buildExclusionNotePins(_property.exclusionZones);
@@ -2060,37 +2061,14 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
           initialZoom: 18,
         ),
         children: [
+          // Always show satellite tiles in preview — no drone map required.
           TileLayer(
-            urlTemplate: _property.hasOrthomosaic()
-                ? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
-                : _satelliteUrlTemplate,
-            subdomains:
-                _property.hasOrthomosaic() ? const ['a', 'b', 'c'] : const [],
+            urlTemplate: _satelliteUrlTemplate,
           ),
-          if (_property.hasOrthomosaic())
-            OverlayImageLayer(
-              overlayImages: [
-                OverlayImage(
-                  bounds: _mapBounds!,
-                  opacity: 0.9,
-                  imageProvider: NetworkImage(_property.orthomosaicUrl!),
-                ),
-              ],
-            ),
-          if (_boundaryPoints.length >= 3)
-            PolygonLayer(
-              polygons: [
-                Polygon(
-                  points: _boundaryPoints,
-                  color: Colors.blue.withValues(alpha: 0.08),
-                  borderColor: Colors.blue,
-                  borderStrokeWidth: 2,
-                  isFilled: true,
-                ),
-              ],
-            ),
+          // Outer boundary in yellow (matches in-session color).
           if (_outerBoundaryDashed.isNotEmpty)
             PolylineLayer(polylines: _outerBoundaryDashed),
+          // Exclusion zones in red.
           if (_exclusionPolygons.isNotEmpty)
             PolygonLayer(polygons: _exclusionPolygons),
           if (_exclusionNotePins.isNotEmpty)

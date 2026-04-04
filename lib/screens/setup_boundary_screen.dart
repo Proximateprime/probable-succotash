@@ -1471,7 +1471,7 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
                 Text(_stepHint()),
                 const SizedBox(height: 6),
                 Text(
-                  'Outer: ${_outerBoundary.length >= 4 ? 'Saved' : 'Pending'} GÇó Zones: ${_specialZones.length} GÇó Exclusions: ${_exclusionZones.length}',
+                  'Outer: ${_outerBoundary.length >= 4 ? 'Saved' : 'Pending'} Gâœ“âœ“ Zones: ${_specialZones.length} Gâœ“âœ“ Exclusions: ${_exclusionZones.length}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 if (outerAcres != null)
