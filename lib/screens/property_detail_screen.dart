@@ -328,6 +328,24 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
         ),
         subtitle: Text('Next due: $nextDueText'),
         children: [
+          if (_sessions.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, size: 16, color: Colors.amber),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Set a schedule now — the countdown starts after your first completed job on this property.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.amber.shade800,
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           DropdownButtonFormField<String>(
             initialValue: _selectedTreatmentType,
             decoration: const InputDecoration(labelText: 'Treatment Type'),
@@ -591,6 +609,9 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
       final sessionConfig = await _showTrackingStartDialog();
       if (!mounted || sessionConfig == null) return;
 
+      final prefs = await SharedPreferences.getInstance();
+      final outdoorMode = prefs.getBool('tracking_outdoor_mode') ?? false;
+
       final sessionId = await supabase.createTrackingSession(
         propertyId: _property.id,
         userId: supabase.currentUserId!,
@@ -614,6 +635,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
               applicationRateUnit: sessionConfig.applicationRateUnit,
               chemicalCostPerUnit: sessionConfig.chemicalCostPerUnit,
               overlapThreshold: _currentUser?.overlapThreshold ?? 25,
+              outdoorMode: outdoorMode,
             ),
           ),
         ).then((_) => _loadSessions());

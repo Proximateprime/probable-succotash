@@ -868,6 +868,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
             overlapThreshold:
                 (latest['overlap_threshold'] as num?)?.toDouble() ??
                     (_userProfile?.overlapThreshold ?? 25),
+            outdoorMode: _outdoorModeEnabled,
           ),
         ),
       );
@@ -959,6 +960,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
       final due = property.nextDue;
       final type = property.treatmentType?.trim();
       if (due == null || type == null || type.isEmpty) continue;
+      // Only show reminder if at least one completed session exists for
+      // this property — before the first job there is no baseline to count from.
+      if (_sessionsForProperty(property.id).isEmpty) continue;
       entries.add(
         _UpcomingTreatmentEntry(
           property: property,

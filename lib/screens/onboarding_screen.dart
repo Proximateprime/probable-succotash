@@ -6,6 +6,7 @@ import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
 
 import '../services/supabase_service.dart';
+import '../utils/local_storage_service.dart';
 import '../widgets/app_ui.dart';
 
 final _onboardingLog = Logger();
@@ -287,12 +288,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Future<void> _markComplete() async {
     setState(() => _isSaving = true);
     final supabase = context.read<SupabaseService>();
+    final localStorage = context.read<LocalStorageService>();
+    final userId = supabase.currentUserId;
+
+    Future<void> saveLocalDismissed() async {
+      if (userId != null) {
+        await localStorage.setOnboardingDismissed(userId, true);
+      }
+    }
 
     try {
       await supabase.markFirstLoginComplete();
+      await saveLocalDismissed();
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       _onboardingLog.e('Onboarding completion error: $e');
+      // Save local flag even if Supabase sync fails so the popup
+      // does not re-appear on next launch.
+      await saveLocalDismissed();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           AppSnackBar.warning(

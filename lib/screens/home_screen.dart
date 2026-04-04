@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/property_model.dart';
@@ -40,11 +41,30 @@ class _HomeScreenState extends State<HomeScreen> {
   double _totalAcresTracked = 0;
   int _selectedIndex = 0;
   bool _isLoading = true;
+  bool _outdoorModeEnabled = false;
 
   @override
   void initState() {
     super.initState();
+    _loadInteractionPrefs();
     _loadData();
+  }
+
+  Future<void> _loadInteractionPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _outdoorModeEnabled = prefs.getBool('tracking_outdoor_mode') ?? false;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _persistInteractionPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('tracking_outdoor_mode', _outdoorModeEnabled);
+    } catch (_) {}
   }
 
   Future<void> _loadData() async {
@@ -134,45 +154,78 @@ class _HomeScreenState extends State<HomeScreen> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Settings',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Settings',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Glove / Outdoor Mode'),
+                  subtitle: const Text('Larger controls for bright outdoor use'),
+                  value: _outdoorModeEnabled,
+                  onChanged: (enabled) {
+                    setSheetState(() => _outdoorModeEnabled = enabled);
+                    setState(() => _outdoorModeEnabled = enabled);
+                    _persistInteractionPrefs();
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('Re-watch Tutorial'),
+                  subtitle: const Text('Show first-time walkthrough again.'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _reopenTutorial();
+                  },
+                ),
+                const SizedBox(height: 8),
+                const Text('Theme mode'),
+                const SizedBox(height: 8),
+                SegmentedButton<ThemeMode>(
+                  segments: const [
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.system,
+                      label: Text('System'),
                     ),
-              ),
-              const SizedBox(height: 8),
-              const Text('Theme mode'),
-              const SizedBox(height: 8),
-              SegmentedButton<ThemeMode>(
-                segments: const [
-                  ButtonSegment<ThemeMode>(
-                    value: ThemeMode.system,
-                    label: Text('System'),
-                  ),
-                  ButtonSegment<ThemeMode>(
-                    value: ThemeMode.light,
-                    label: Text('Light'),
-                  ),
-                  ButtonSegment<ThemeMode>(
-                    value: ThemeMode.dark,
-                    label: Text('Dark'),
-                  ),
-                ],
-                selected: {themeController.themeMode},
-                onSelectionChanged: (selection) {
-                  themeController.setThemeMode(selection.first);
-                },
-              ),
-            ],
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.light,
+                      label: Text('Light'),
+                    ),
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.dark,
+                      label: Text('Dark'),
+                    ),
+                  ],
+                  selected: {themeController.themeMode},
+                  onSelectionChanged: (selection) {
+                    themeController.setThemeMode(selection.first);
+                  },
+                ),
+              ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+
+  void _reopenTutorial() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) => const OnboardingScreen(isFirstLogin: false),
       ),
     );
   }
@@ -752,7 +805,22 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildRecentJobsPreview() {
     if (_recentSessions.isEmpty) {
-      return const Text('No sessions yet');
+      return Row(
+        children: [
+          Icon(Icons.history_toggle_off_outlined,
+              size: 16, color: Colors.grey.shade500),
+          const SizedBox(width: 6),
+          Text(
+            'No sessions yet',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurface
+                      .withValues(alpha: 0.55),
+                ),
+          ),
+        ],
+      );
     }
 
     return Column(
@@ -941,7 +1009,8 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             )
           else
-            ..._properties.map((property) {
+            ...List.generate(_properties.length, (index) {
+              final property = _properties[index];
               return Card(
                 elevation: 2,
                 margin: const EdgeInsets.only(bottom: 10),
@@ -977,7 +1046,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ).then((_) => _loadData());
                   },
                 ),
-              );
+              ).animate(delay: (60 * index).ms).fadeIn(duration: 280.ms).slideY(begin: 0.04, end: 0);
             }),
         ],
       ),

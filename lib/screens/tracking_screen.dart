@@ -40,6 +40,7 @@ class TrackingScreen extends StatefulWidget {
   final String? applicationRateUnit;
   final double? chemicalCostPerUnit;
   final double overlapThreshold;
+  final bool outdoorMode;
 
   const TrackingScreen({
     Key? key,
@@ -51,6 +52,7 @@ class TrackingScreen extends StatefulWidget {
     this.applicationRateUnit,
     this.chemicalCostPerUnit,
     this.overlapThreshold = 25,
+    this.outdoorMode = false,
   }) : super(key: key);
 
   @override
@@ -219,6 +221,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
       _showSnackBar(AppSnackBar.warning('Waiting for a GPS fix.'));
       return;
     }
+    if (widget.outdoorMode) HapticFeedback.mediumImpact();
     setState(() {
       _spotTreatments.add(_SpotTreatment(
         center: LatLng(_latitude, _longitude),
@@ -1142,6 +1145,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
 
   void _togglePause() {
     if (_isSessionEnded) return;
+    if (widget.outdoorMode) HapticFeedback.mediumImpact();
     setState(() {
       _isTracking = !_isTracking;
       if (_isTracking) {
@@ -1564,6 +1568,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
     ).then((_) => Navigator.pop(context));
   }
 Future<void> _stopTracking() async {
+    if (widget.outdoorMode) HapticFeedback.heavyImpact();
     setState(() {
       _isTracking = false;
       _isSessionEnded = true;
@@ -3218,9 +3223,10 @@ Future<void> _stopTracking() async {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF6A1B9A),
                   foregroundColor: Colors.white,
-                  minimumSize: const Size.fromHeight(52),
-                  textStyle: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w700),
+                  minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 52),
+                  textStyle: TextStyle(
+                      fontSize: widget.outdoorMode ? 16 : 15,
+                      fontWeight: FontWeight.w700),
                 ),
               ),
             ),
@@ -3335,7 +3341,11 @@ Future<void> _stopTracking() async {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,
-                    minimumSize: const Size.fromHeight(50),
+                    minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 50),
+                    textStyle: widget.outdoorMode
+                        ? const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)
+                        : null,
                   ),
                 ),
               ),
@@ -3348,7 +3358,11 @@ Future<void> _stopTracking() async {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF455A64),
                     foregroundColor: Colors.white,
-                    minimumSize: const Size.fromHeight(50),
+                    minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 50),
+                    textStyle: widget.outdoorMode
+                        ? const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)
+                        : null,
                   ),
                 ),
               ),
@@ -3361,7 +3375,11 @@ Future<void> _stopTracking() async {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red,
                     foregroundColor: Colors.white,
-                    minimumSize: const Size.fromHeight(50),
+                    minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 50),
+                    textStyle: widget.outdoorMode
+                        ? const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)
+                        : null,
                   ),
                 ),
               ),
