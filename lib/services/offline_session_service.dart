@@ -146,6 +146,7 @@ class OfflineSessionService {
   Future<OfflineSyncReport> syncPendingSessionsWithReport(
     SupabaseService supabase, {
     bool includeFailed = false,
+    String? skipSessionId,
   }) async {
     return _withWriteLock(() async {
       await _ensureInitialized();
@@ -153,8 +154,24 @@ class OfflineSessionService {
 
       final syncable = records.where((entry) {
         final status = _statusOf(entry);
-        if (status == 'queued') return true;
-        return includeFailed && status == 'failed';
+        if (status == 'synced') return false;
+        if (!includeFailed && status == 'failed') return false;
+
+        // Never auto-sync in-progress (draft) sessions.  An entry with
+        // is_completed=false means tracking is still ongoing — pushing it to
+        // Supabase would create a partial record and discard the local draft.
+        final payloadMap = _payloadOf(entry);
+        final isCompleted = payloadMap['is_completed'];
+        if (isCompleted is bool && !isCompleted) return false;
+
+        // Also skip the explicitly provided session ID (e.g. the currently
+        // active session on the tracking screen).
+        if (skipSessionId != null && skipSessionId.isNotEmpty) {
+          final entryId = _idOf(entry);
+          if (entryId == skipSessionId) return false;
+        }
+
+        return true;
       }).toList();
 
       if (syncable.isEmpty) {
@@ -243,10 +260,12 @@ class OfflineSessionService {
   Future<int> syncPendingSessions(
     SupabaseService supabase, {
     bool includeFailed = false,
+    String? skipSessionId,
   }) async {
     final report = await syncPendingSessionsWithReport(
       supabase,
       includeFailed: includeFailed,
+      skipSessionId: skipSessionId,
     );
     return report.syncedCount;
   }

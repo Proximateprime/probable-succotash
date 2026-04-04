@@ -15,6 +15,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:turf/turf.dart' as turf;
 
 import '../models/property_model.dart';
@@ -96,7 +97,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
   static const String _swathPrefPrefix = 'tracking_swath_width_feet';
   static const String _tankPrefPrefix = 'tracking_tank_capacity_gallons';
   static const int _autoPauseInactivitySeconds = 180;
-  static const double _maxAcceptedAccuracyMeters = 16.0;
+  // Discard GPS fixes worse than 8 m — tighter than the old 16 m threshold to
+  // eliminate the 2+ m drift and random long-line artefacts reported in testing.
+  static const double _maxAcceptedAccuracyMeters = 8.0;
+  // Max distance a point may jump in ≤3 s before being treated as a GPS ghost.
+  static const double _maxGpsJumpMeters = 15.0;
+  // Rolling-average window used to smooth the recorded path.
+  static const int _gpsSmoothingBufferSize = 3;
   static const double _stationarySpeedThresholdMps = 0.85;
   static const double _highPrecisionStationarySpeedThresholdMps = 0.6;
   static const double _stationaryExtraMovementMeters = 3.0;
@@ -154,6 +161,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
   int _cancelJobSecondsLeft = 0;
   bool _cancelDialogOpen = false;
   _SessionSummary? _sessionSummary;
+  // Rolling GPS smoothing buffer — keeps the last N raw positions for averaging.
+  final List<LatLng> _gpsSmoothingBuffer = [];
   double? _tankCapacityGallons;
   double? _applicationRatePerAcre;
   String _applicationRateUnit = 'gal';
@@ -178,6 +187,25 @@ class _TrackingScreenState extends State<TrackingScreen> {
     messenger.showSnackBar(snackBar);
   }
 
+  /// Returns a smoothed [LatLng] by averaging the last [_gpsSmoothingBufferSize]
+  /// raw positions. Eliminates high-frequency jitter without introducing lag.
+  LatLng _smoothedGpsPoint(LatLng raw) {
+    _gpsSmoothingBuffer.add(raw);
+    if (_gpsSmoothingBuffer.length > _gpsSmoothingBufferSize) {
+      _gpsSmoothingBuffer.removeAt(0);
+    }
+    if (_gpsSmoothingBuffer.length == 1) return raw;
+    final avgLat = _gpsSmoothingBuffer
+            .map((p) => p.latitude)
+            .reduce((a, b) => a + b) /
+        _gpsSmoothingBuffer.length;
+    final avgLng = _gpsSmoothingBuffer
+            .map((p) => p.longitude)
+            .reduce((a, b) => a + b) /
+        _gpsSmoothingBuffer.length;
+    return LatLng(avgLat, avgLng);
+  }
+
   Future<void> _initializeTracking() async {
     await _initConnectivityMonitoring();
     _startCompassHeadingStream();
@@ -189,6 +217,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
     await _primeCurrentLocation();
     _startTracking();
     _startElapsedTimer();
+    // Keep screen alive while actively tracking — released on stop/pause/dispose.
+    WakelockPlus.enable();
   }
 
   Future<void> _hydrateFromOfflineDraft() async {
@@ -542,7 +572,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
   Future<void> _syncPendingSessionsSilently() async {
     try {
       final supabase = context.read<SupabaseService>();
-      await OfflineSessionService().syncPendingSessions(supabase);
+      // Skip syncing the current session's in-progress draft. Sending an
+      // incomplete record to Supabase would delete the local copy from Hive
+      // and leave a partial row with no end_time in the database.
+      await OfflineSessionService().syncPendingSessions(
+        supabase,
+        skipSessionId: _isSessionEnded ? null : widget.sessionId,
+      );
     } catch (_) {
       // Keep queued sessions for later sync.
     }
@@ -702,7 +738,14 @@ class _TrackingScreenState extends State<TrackingScreen> {
       (Position position) {
         if (!_isTracking || _isSessionEnded) return;
 
-        final currentPoint = LatLng(position.latitude, position.longitude);
+        // Discard null-island fixes (GPS returning 0,0 on init or signal loss).
+        if (position.latitude.abs() < 0.001 &&
+            position.longitude.abs() < 0.001) return;
+
+        final rawPoint = LatLng(position.latitude, position.longitude);
+        // Rolling-average smoothing reduces jitter on path lines and boundary
+        // checks without introducing noticeable positional lag.
+        final currentPoint = _smoothedGpsPoint(rawPoint);
         final inMapBounds = _isPointInsideMapBounds(currentPoint);
         final insideOuterBoundary = _isInsideOuterBoundary(currentPoint);
         final insideNoSprayZone = _isInsideAnyExclusion(currentPoint);
@@ -720,11 +763,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
               insideOuterBoundary &&
               insideActiveZone &&
               !insideNoSprayZone &&
-              _shouldRecordPathPoint(position)) {
+              _shouldRecordPathPoint(position, smoothed: currentPoint)) {
             final heading = _effectiveReachHeadingDegrees();
+            // Store the smoothed coordinate so the rendered path is clean
+            // even when the raw GPS signal jitters between consecutive fixes.
             final pathPoint = TrackingPath(
-              latitude: position.latitude,
-              longitude: position.longitude,
+              latitude: currentPoint.latitude,
+              longitude: currentPoint.longitude,
               accuracy: position.accuracy,
               timestamp: now,
             );
@@ -845,25 +890,36 @@ class _TrackingScreenState extends State<TrackingScreen> {
     _persistOfflineDraft(force: true);
   }
 
-  bool _shouldRecordPathPoint(Position position) {
+  /// Returns true when the GPS fix is acceptable and the movement is real.
+  ///
+  /// [smoothed] is the rolling-average position already computed by
+  /// [_smoothedGpsPoint]; we compare against it rather than the raw fix so
+  /// jump detection isn't fooled by per-fix jitter.
+  bool _shouldRecordPathPoint(Position position, {LatLng? smoothed}) {
     final accuracy =
         position.accuracy.isFinite ? position.accuracy.clamp(0.0, 100.0) : 100.0;
 
-    // Reject fixes too noisy -- prevents stationary drift.
+    // 1. Accuracy gate — reject fixes worse than 8 m to prevent drift lines.
     if (accuracy > _maxAcceptedAccuracyMeters) return false;
 
     if (_paths.isEmpty) return true;
 
     final last = _paths.last;
+    final candidate = smoothed ?? LatLng(position.latitude, position.longitude);
     final movedMeters = Geolocator.distanceBetween(
       last.latitude,
       last.longitude,
-      position.latitude,
-      position.longitude,
+      candidate.latitude,
+      candidate.longitude,
     );
 
     final elapsedSeconds =
         math.max(1, DateTime.now().difference(last.timestamp).inSeconds);
+
+    // 2. GPS ghost / jump guard — a point that jumps >15 m in ≤3 s is almost
+    //    certainly a satellite glitch, not real walking.  Drop it so no long
+    //    straight line is drawn across the map.
+    if (movedMeters > _maxGpsJumpMeters && elapsedSeconds <= 3) return false;
 
     final speedFromSensor = (position.speed.isFinite && position.speed > 0)
         ? position.speed
@@ -877,6 +933,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
         ? _highPrecisionStationaryExtraMovementMeters
         : _stationaryExtraMovementMeters;
 
+    // 3. Stationary drift guard — ignore tiny wiggles while standing still.
     final likelyStationary = speedMps < speedThreshold;
     final noiseFloor = accuracy
         .clamp(_minAccuracyNoiseFloorMeters, _maxAccuracyNoiseFloorMeters)
@@ -956,6 +1013,11 @@ class _TrackingScreenState extends State<TrackingScreen> {
       if (_isTracking) {
         _autoPausedByInactivity = false;
         _lastMovementAt ??= DateTime.now();
+        // Re-enable wakelock when resuming so the screen stays on while walking.
+        WakelockPlus.enable();
+      } else {
+        // Release wakelock while paused — user is reviewing, not walking.
+        WakelockPlus.disable();
       }
     });
   }
@@ -1094,6 +1156,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
       _rawGnssObsLines.clear();
       _rawGnssObsContent = null;
     });
+
+    WakelockPlus.disable();
 
     await _positionStream?.cancel();
     await _stopRawGnssCapture();
@@ -1371,6 +1435,9 @@ Future<void> _stopTracking() async {
       _isSessionEnded = true;
     });
 
+    // Session is over — release the screen wakelock so OS can manage power.
+    WakelockPlus.disable();
+
     await _positionStream?.cancel();
     await _stopRawGnssCapture();
 
@@ -1512,6 +1579,8 @@ Future<void> _stopTracking() async {
       _isTracking = false;
       _isSessionEnded = true;
     });
+
+    WakelockPlus.disable();
 
     await _positionStream?.cancel();
     await _stopRawGnssCapture();
@@ -3462,6 +3531,9 @@ Future<void> _stopTracking() async {
 
   @override
   void dispose() {
+    // Always release wakelock on dispose — covers cases where the widget is
+    // removed without going through the normal stop/abandon flow (e.g. OS kill).
+    WakelockPlus.disable();
     _positionStream?.cancel();
     _connectivitySubscription?.cancel();
     _rawGnssSubscription?.cancel();
