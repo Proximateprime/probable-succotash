@@ -167,6 +167,19 @@ class _TrackingScreenState extends State<TrackingScreen> {
   _SessionSummary? _sessionSummary;
   // Rolling GPS smoothing buffer — keeps the last N raw positions for averaging.
   final List<LatLng> _gpsSmoothingBuffer = [];
+  // Monotonic version counter bumped every time _paths changes.
+  // Cached getters compare against this to skip expensive recomputation.
+  int _pathVersion = 0;
+  int _renderPathVersion = -1;
+  List<LatLng> _cachedRenderPath = const [];
+  int _distanceVersion = -1;
+  double _cachedDistanceMiles = 0;
+  int _coverageVersion = -1;
+  double _cachedSwathForCoverage = 0;
+  double _cachedCoveragePercent = 0;
+  int _heatCellsVersion = -1;
+  double _cachedSwathForHeat = 0;
+  List<_OverlapHeatCell> _cachedHeatCells = const [];
   // Spot treatment mode
   bool _spotTreatmentMode = false;
   double _spotRadiusFeet = 4.0;
@@ -283,12 +296,19 @@ class _TrackingScreenState extends State<TrackingScreen> {
   /// Returns a visually smoothed version of the coverage path for map rendering.
   /// Uses Douglas-Peucker to intelligently reduce points so curves and circles
   /// look clean. The full _paths list is kept for accurate coverage % math.
+  /// Result is cached and only recomputed when _pathVersion changes.
   List<LatLng> _smoothedRenderPath() {
+    if (_pathVersion == _renderPathVersion) return _cachedRenderPath;
+    _renderPathVersion = _pathVersion;
     if (_paths.length < 3) {
-      return _paths.map((p) => LatLng(p.latitude, p.longitude)).toList();
+      _cachedRenderPath =
+          _paths.map((p) => LatLng(p.latitude, p.longitude)).toList();
+    } else {
+      final raw =
+          _paths.map((p) => LatLng(p.latitude, p.longitude)).toList();
+      _cachedRenderPath = _douglasPeucker(raw, _dpToleranceDeg);
     }
-    final raw = _paths.map((p) => LatLng(p.latitude, p.longitude)).toList();
-    return _douglasPeucker(raw, _dpToleranceDeg);
+    return _cachedRenderPath;
   }
 
   // ── Spot Treatment ────────────────────────────────────────────────────────
@@ -474,6 +494,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
           _paths
             ..clear()
             ..addAll(hydratedPaths);
+          _pathVersion++;
           _lastMovementAt = hydratedPaths.last.timestamp;
         }
       });
@@ -998,6 +1019,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
             _paths.add(
               pathPoint,
             );
+            _pathVersion++;
             _lastMovementAt = now;
             _autoPausedByInactivity = false;
             recordedPoint = true;
@@ -1103,6 +1125,10 @@ class _TrackingScreenState extends State<TrackingScreen> {
       _isTracking = false;
       _autoPausedByInactivity = true;
     });
+
+    // Release wakelock while idle — the screen doesn't need to stay on when
+    // the device is in a pocket after inactivity.
+    WakelockPlus.disable();
 
     _showSnackBar(
       AppSnackBar.warning(
@@ -1234,6 +1260,9 @@ class _TrackingScreenState extends State<TrackingScreen> {
     setState(() {
       _isTracking = !_isTracking;
       if (_isTracking) {
+        // Clear stale positions so the first fix after resume isn't blended
+        // with pre-pause coordinates (avoids phantom teleport lines).
+        _gpsSmoothingBuffer.clear();
         _autoPausedByInactivity = false;
         _lastMovementAt ??= DateTime.now();
         // Re-enable wakelock when resuming — only if the user wants screen on.
@@ -1258,6 +1287,10 @@ class _TrackingScreenState extends State<TrackingScreen> {
       _reachSamples.removeWhere((sample) => sample.timestamp.isAfter(cutoff));
       _lastMovementAt = _paths.isEmpty ? null : _paths.last.timestamp;
       _autoPausedByInactivity = false;
+      // Clear smoothing buffer so next GPS fix isn't blended with undone
+      // positions, and bump the cache version so stats are recalculated.
+      _gpsSmoothingBuffer.clear();
+      _pathVersion++;
     });
 
     final removed = before - _paths.length;
@@ -1378,6 +1411,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
       _reachSamples.clear();
       _rawGnssObsLines.clear();
       _rawGnssObsContent = null;
+      _pathVersion++;
     });
 
     WakelockPlus.disable();
@@ -2785,6 +2819,12 @@ Future<void> _stopTracking() async {
 
   List<_OverlapHeatCell> _buildOverlapHeatCells() {
     if (_paths.length < 3) return const [];
+    if (_pathVersion == _heatCellsVersion &&
+        _swathWidthFeet == _cachedSwathForHeat) {
+      return _cachedHeatCells;
+    }
+    _heatCellsVersion = _pathVersion;
+    _cachedSwathForHeat = _swathWidthFeet;
 
     final gridMeters = math.max(0.6, _swathWidthFeet * 0.3048 * 0.55);
     final cells = <String, _OverlapHeatCell>{};
@@ -2813,16 +2853,27 @@ Future<void> _stopTracking() async {
 
     final hotCells = cells.values.where((c) => c.passes > 1).toList();
     hotCells.sort((a, b) => b.passes.compareTo(a.passes));
-    return hotCells;
+    _cachedHeatCells = hotCells;
+    return _cachedHeatCells;
   }
 
   double _distanceMiles() {
+    if (_pathVersion == _distanceVersion) return _cachedDistanceMiles;
+    _distanceVersion = _pathVersion;
     final mapService = context.read<MapService>();
-    return mapService.calculateDistanceMiles(_paths);
+    _cachedDistanceMiles = mapService.calculateDistanceMiles(_paths);
+    return _cachedDistanceMiles;
   }
 
   double _liveCoveragePercent() {
     if (_paths.length < 2) return 0;
+    // Cache key includes path version + swath to avoid stale results.
+    if (_pathVersion == _coverageVersion &&
+        _swathWidthFeet == _cachedSwathForCoverage) {
+      return _cachedCoveragePercent;
+    }
+    _coverageVersion = _pathVersion;
+    _cachedSwathForCoverage = _swathWidthFeet;
 
     final coveredSqMeters = _reachModeEnabled
         ? _reachCoveredAreaSqMeters()
@@ -2859,7 +2910,8 @@ Future<void> _stopTracking() async {
     sprayableAreaSqMeters = math.max(1, sprayableAreaSqMeters);
 
     final percent = (coveredSqMeters / sprayableAreaSqMeters) * 100;
-    return percent.clamp(0, 100);
+    _cachedCoveragePercent = percent.clamp(0, 100).toDouble();
+    return _cachedCoveragePercent;
   }
 
   double _boundsAreaSqMeters(LatLngBounds? bounds) {
@@ -2920,6 +2972,19 @@ Future<void> _stopTracking() async {
 
   String _elapsedLabel() {
     return AppFormat.durationSeconds(_elapsedSeconds);
+  }
+
+  /// GPS signal quality colour used for the LIVE pill and accuracy label.
+  ///   Green  ≤ 3 m — excellent
+  ///   Light green ≤ 5 m — good
+  ///   Amber  ≤ 8 m — acceptable (still recording)
+  ///   Red    > 8 m — points being rejected
+  Color _gpsSignalColor() {
+    if (_accuracy <= 0) return Colors.green;
+    if (_accuracy <= 3) return Colors.green;
+    if (_accuracy <= 5) return Colors.lightGreen;
+    if (_accuracy <= _maxAcceptedAccuracyMeters) return Colors.amber;
+    return Colors.redAccent;
   }
 
   Widget _statChip({required String label, required String value}) {
@@ -3063,14 +3128,14 @@ Future<void> _stopTracking() async {
             ),
             const SizedBox(height: 4),
           ],
-          // ── Single-row info bar: status pill | coverage | distance | swath ──
+          // ── Single-row info bar: status pill | GPS | coverage | distance | swath ──
           Row(
             children: [
-              // Status pill
+              // Status pill — color reflects GPS signal quality when live.
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: _isTracking ? Colors.green : Colors.orange,
+                  color: _isTracking ? _gpsSignalColor() : Colors.orange,
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
@@ -3079,6 +3144,17 @@ Future<void> _stopTracking() async {
                       color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
                 ),
               ),
+              if (_isTracking && _accuracy > 0) ...[
+                const SizedBox(width: 4),
+                Text(
+                  '±${_accuracy.toStringAsFixed(0)}m',
+                  style: TextStyle(
+                    color: _gpsSignalColor().withValues(alpha: 0.9),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 10,
+                  ),
+                ),
+              ],
               const SizedBox(width: 8),
               // Coverage %
               Text(
