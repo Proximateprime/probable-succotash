@@ -1,11 +1,11 @@
 {
-    "name": "covertrack",
-    "short_name": "covertrack",
+    "name": "SprayMap Pro",
+    "short_name": "SprayMap Pro",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F5F5F5",
+    "theme_color": "#4CAF50",
+    "description": "Precision GPS coverage tracking for lawn care, pest control, and small farming.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
