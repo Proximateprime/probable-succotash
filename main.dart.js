@@ -72354,6 +72354,7 @@ aPk(){return this.yC(!1)},
 aPl(a){var s=0,r=A.t(t.H),q,p=2,o=[],n=this,m,l,k,j,i,h,g,f
 var $async$yC=A.o(function(b,c){if(b===1){o.push(c)
 s=p}for(;;)switch(s){case 0:if(!n.a1||n.dx){s=1
+break}if(n.c==null){s=1
 break}j=new A.aA(Date.now(),0,!1)
 if(!a&&n.ar!=null){i=n.ar
 i.toString
@@ -72667,9 +72668,9 @@ case 5:s=7
 return A.h(n.DF(),$async$nG)
 case 7:s=1
 break
-case 6:p=9
-a2=n.c
-a2.toString
+case 6:a2=n.c
+if(a2==null){s=1
+break}p=9
 m=A.cE(a2,!1,t.g)
 a2=n.c
 a2.toString
@@ -72695,9 +72696,8 @@ break
 case 9:p=8
 a5=o.pop()
 a2=n.c
-a2.toString
-m=A.cE(a2,!1,t.g)
-g=m
+if(a2==null){s=1
+break}g=A.cE(a2,!1,t.g)
 a2=n.c
 a2.toString
 f=A.cE(a2,!1,t.U7)
@@ -72755,8 +72755,8 @@ return A.r($async$nG,r)},
 DF(){var s=0,r=A.t(t.H),q,p=this,o,n,m,l,k,j,i,h,g,f,e
 var $async$DF=A.o(function(a,b){if(a===1)return A.p(b,r)
 for(;;)switch(s){case 0:e=p.c
-e.toString
-o=A.cE(e,!1,t.g)
+if(e==null){s=1
+break}o=A.cE(e,!1,t.g)
 e=p.c
 e.toString
 n=A.cE(e,!1,t.U7)
@@ -72819,8 +72819,8 @@ return A.h(t.uz.b(f)?f:A.eB(f,t.H),$async$qv)
 case 3:s=4
 return A.h(n.vC(),$async$qv)
 case 4:f=n.c
-f.toString
-m=A.cE(f,!1,t.g)
+if(f==null){s=1
+break}m=A.cE(f,!1,t.g)
 f=n.c
 f.toString
 e=A.cE(f,!1,t.U7)
@@ -73308,7 +73308,7 @@ q=q.a
 q===$&&A.a()
 return new A.ad((s.a+q.a)/2,(s.b+q.b)/2)}return B.CI},
 a8n(){var s=this.k2
-if(s<=0)return B.bK
+if(!isFinite(s)||s<=0)return B.bK
 if(s<=3)return B.bK
 if(s<=5)return B.b1e
 if(s<=8)return B.lq
@@ -74016,7 +74016,7 @@ $0(){var s,r,q,p=this,o=p.b,n=p.c
 o.id=n.a
 o.k1=n.b
 s=n.f
-o.k2=s
+o.k2=isFinite(s)?s:0
 r=p.d
 o.aVp(r)
 if(p.e&&p.f&&p.r&&!p.w&&o.aSE(n,r)){q=o.Ck()
