@@ -999,7 +999,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
         setState(() {
           _latitude = position.latitude;
           _longitude = position.longitude;
-          _accuracy = position.accuracy;
+          _accuracy = position.accuracy.isFinite ? position.accuracy : 0;
           _updateGuidanceForPoint(currentPoint);
 
           if (inMapBounds &&
@@ -1201,6 +1201,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
 
   Future<void> _persistOfflineDraft({bool force = false}) async {
     if (!_isOfflineMode || _isSessionEnded) return;
+    if (!mounted) return;
 
     final now = DateTime.now();
     if (!force && _lastOfflineSnapshotAt != null) {
@@ -1704,6 +1705,8 @@ Future<void> _stopTracking() async {
       return;
     }
 
+    if (!mounted) return;
+
     try {
       final supabase = context.read<SupabaseService>();
       final mapService = context.read<MapService>();
@@ -1727,6 +1730,8 @@ Future<void> _stopTracking() async {
 
       await _showSessionCompleteActions(distance: distance, coverage: coverage);
     } catch (e) {
+      if (!mounted) return;
+
       final supabase = context.read<SupabaseService>();
       final mapService = context.read<MapService>();
       final offline = OfflineSessionService();
@@ -1784,6 +1789,8 @@ Future<void> _stopTracking() async {
   }
 
   Future<void> _saveSessionOfflineAndComplete() async {
+    if (!mounted) return;
+
     final supabase = context.read<SupabaseService>();
     final mapService = context.read<MapService>();
     final offline = OfflineSessionService();
@@ -1842,6 +1849,8 @@ Future<void> _stopTracking() async {
 
     await _positionStream?.cancel();
     await _stopRawGnssCapture();
+
+    if (!mounted) return;
 
     final supabase = context.read<SupabaseService>();
     final mapService = context.read<MapService>();
@@ -2980,7 +2989,7 @@ Future<void> _stopTracking() async {
   ///   Amber  ≤ 8 m — acceptable (still recording)
   ///   Red    > 8 m — points being rejected
   Color _gpsSignalColor() {
-    if (_accuracy <= 0) return Colors.green;
+    if (!_accuracy.isFinite || _accuracy <= 0) return Colors.green;
     if (_accuracy <= 3) return Colors.green;
     if (_accuracy <= 5) return Colors.lightGreen;
     if (_accuracy <= _maxAcceptedAccuracyMeters) return Colors.amber;
