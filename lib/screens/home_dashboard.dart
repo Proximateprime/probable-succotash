@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
@@ -21,6 +22,7 @@ import '../services/network_status_service.dart';
 import '../services/offline_session_service.dart';
 import '../services/supabase_service.dart';
 import '../services/weather_service.dart';
+import '../utils/map_tile_defaults.dart';
 import '../utils/theme_controller.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/dashboard_widgets.dart';
@@ -69,6 +71,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
   double _totalAcresTracked = 0;
   int _selectedIndex = 0;
   bool _isLoading = true;
+  String? _loadError;
   bool _isSyncingPendingSessions = false;
   int _pendingSessionCount = 0;
   int _failedSessionCount = 0;
@@ -114,7 +117,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
         _outdoorModeEnabled = prefs.getBool('tracking_outdoor_mode') ?? false;
         _keepScreenOnDuringJobs = prefs.getBool('tracking_keep_screen_on_jobs') ?? true;
       });
-    } catch (_) {}
+    } catch (_) {
+      // Non-critical: defaults are fine if prefs fail to load.
+    }
   }
 
   Future<void> _persistInteractionPrefs() async {
@@ -122,7 +127,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('tracking_outdoor_mode', _outdoorModeEnabled);
       await prefs.setBool('tracking_keep_screen_on_jobs', _keepScreenOnDuringJobs);
-    } catch (_) {}
+    } catch (_) {
+      // Non-critical: preference will reload from default next launch.
+    }
   }
 
   Future<void> _maybeFetchWeather() async {
@@ -230,7 +237,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
     } catch (e) {
       logger.e('Load dashboard error: $e');
       if (!mounted) return;
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+        _loadError = e.toString();
+      });
     }
   }
 
@@ -242,26 +252,28 @@ class _HomeDashboardState extends State<HomeDashboard> {
     final message =
         'Max maps reached for your tier - upgrade? (${limit.activeCount}/$maxLabel)';
 
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Map Limit Reached'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
+        await showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Map Limit Reached'),
+            content: Text(message),
+            actions: [
+              AppPrimaryButton(
+                label: 'Cancel',
+                onPressed: () => Navigator.of(context).pop(),
+                isDense: true,
+              ),
+              AppPrimaryButton(
+                label: 'Upgrade',
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  _openUpgradePlan();
+                },
+                isDense: false,
+              ),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              _openUpgradePlan();
-            },
-            child: const Text('Upgrade'),
-          ),
-        ],
-      ),
-    );
+        );
   }
   void _showOnboarding({bool isFirstLogin = true}) {
     Navigator.of(context).push(
@@ -382,6 +394,18 @@ class _HomeDashboardState extends State<HomeDashboard> {
     if (_pendingSessionCount == 0 && _failedSessionCount == 0) return;
     await _syncPendingSessions(silent: true);
   }
+
+  Future<void> _retryFailedSessions() async {
+    final offline = OfflineSessionService();
+    final requeued = await offline.retryFailedSessions();
+    if (requeued > 0) {
+      await _loadPendingSessionCount();
+      await _syncPendingSessions();
+    } else if (mounted) {
+      _showSnackBar(AppSnackBar.info('No failed sessions to retry.'));
+    }
+  }
+
   Future<void> _handleSignOut() async {
     try {
       final supabase = context.read<SupabaseService>();
@@ -412,23 +436,56 @@ class _HomeDashboardState extends State<HomeDashboard> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (context) => StatefulBuilder(
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.7,
+        minChildSize: 0.4,
+        maxChildSize: 0.92,
+        builder: (context, scrollController) => StatefulBuilder(
         builder: (context, setSheetState) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+          child: ListView(
+            controller: scrollController,
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            children: [
                 Text(
                   'Settings',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                 ),
-                const SizedBox(height: 8),
-                const Text('Theme mode'),
-                const SizedBox(height: 8),
+                const SizedBox(height: 16),
+
+                // ── Appearance ────────────────────────────────────────────
+                Text(
+                  'Appearance',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                SegmentedButton<ThemeMode>(
+                  segments: const [
+                    ButtonSegment(value: ThemeMode.system, label: Text('System'), icon: Icon(Icons.brightness_auto, size: 18)),
+                    ButtonSegment(value: ThemeMode.light, label: Text('Light'), icon: Icon(Icons.light_mode, size: 18)),
+                    ButtonSegment(value: ThemeMode.dark, label: Text('Dark'), icon: Icon(Icons.dark_mode, size: 18)),
+                  ],
+                  selected: {themeController.themeMode},
+                  onSelectionChanged: (modes) {
+                    themeController.setThemeMode(modes.first);
+                    setSheetState(() {});
+                  },
+                ),
+                const Divider(height: 28),
+
+                // ── Tracking Preferences ──────────────────────────────────
+                Text(
+                  'Tracking Preferences',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
                 SwitchListTile.adaptive(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Glove / Outdoor Mode'),
@@ -443,6 +500,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
                 SwitchListTile.adaptive(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Keep screen on during jobs'),
+                  subtitle: const Text('Prevents display sleep while tracking'),
                   value: _keepScreenOnDuringJobs,
                   onChanged: (enabled) {
                     setSheetState(() => _keepScreenOnDuringJobs = enabled);
@@ -450,107 +508,15 @@ class _HomeDashboardState extends State<HomeDashboard> {
                     _persistInteractionPrefs();
                   },
                 ),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.menu_book_outlined),
-                  title: const Text('Re-watch Tutorial'),
-                  subtitle: const Text('Show first-time walkthrough again.'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _reopenTutorial();
-                  },
-                ),
-                const Divider(),
+                const SizedBox(height: 4),
                 Text(
-                  'Help & Tutorial',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-                const SizedBox(height: 6),
-                const ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: EdgeInsets.only(bottom: 8),
-                  leading: Icon(Icons.route_outlined),
-                  title: Text('How do I set boundaries?'),
-                  children: [
-                    ListTile(
-                      dense: true,
-                      title: Text('Tap Quick Setup - Walk Perimeter or Import Drone Map'),
-                    ),
-                  ],
-                ),
-                const ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: EdgeInsets.only(bottom: 8),
-                  leading: Icon(Icons.tune_outlined),
-                  title: Text('What is Reach Mode?'),
-                  children: [
-                    ListTile(
-                      dense: true,
-                      title: Text('Toggle for spraying edges/bushes from the side'),
-                    ),
-                  ],
-                ),
-                const ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: EdgeInsets.only(bottom: 8),
-                  leading: Icon(Icons.place_outlined),
-                  title: Text('How do I mark ant hills?'),
-                  children: [
-                    ListTile(
-                      dense: true,
-                      title: Text('Toggle Spot Treatment -> tap Mark Spot'),
-                    ),
-                  ],
-                ),
-                const ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  childrenPadding: EdgeInsets.only(bottom: 8),
-                  leading: Icon(Icons.cloud_off_outlined),
-                  title: Text('Offline mode?'),
-                  children: [
-                    ListTile(
-                      dense: true,
-                      title: Text('Sessions save locally - sync when online'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                RadioListTile<ThemeMode>(
-                  value: ThemeMode.system,
-                  groupValue: themeController.themeMode,
-                  title: const Text('System'),
-                  onChanged: (mode) {
-                    if (mode != null) themeController.setThemeMode(mode);
-                  },
-                ),
-                RadioListTile<ThemeMode>(
-                  value: ThemeMode.light,
-                  groupValue: themeController.themeMode,
-                  title: const Text('Light'),
-                  onChanged: (mode) {
-                    if (mode != null) themeController.setThemeMode(mode);
-                  },
-                ),
-                RadioListTile<ThemeMode>(
-                  value: ThemeMode.dark,
-                  groupValue: themeController.themeMode,
-                  title: const Text('Dark'),
-                  onChanged: (mode) {
-                    if (mode != null) themeController.setThemeMode(mode);
-                  },
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Overlap review threshold',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  'Overlap alert threshold: ${overlapThreshold.toStringAsFixed(0)}%',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
                 ),
-                const SizedBox(height: 4),
                 Text(
-                  'Highlight overlap risk in the session summary and export once it exceeds ${overlapThreshold.toStringAsFixed(0)}%.',
+                  'Flag overlap risk in summaries and exports above this level.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 Slider(
@@ -565,7 +531,8 @@ class _HomeDashboardState extends State<HomeDashboard> {
                 ),
                 Align(
                   alignment: Alignment.centerRight,
-                  child: FilledButton(
+                  child: AppPrimaryButton(
+                    label: 'Save Threshold',
                     onPressed: isSavingOverlapThreshold
                         ? null
                         : () async {
@@ -607,10 +574,76 @@ class _HomeDashboardState extends State<HomeDashboard> {
                                   () => isSavingOverlapThreshold = false);
                             }
                           },
-                    child: Text(
-                      isSavingOverlapThreshold ? 'Saving...' : 'Save Threshold',
-                    ),
                   ),
+                ),
+                const Divider(height: 28),
+
+                // ── Help & Tutorial ──────────────────────────────────────
+                Text(
+                  'Help & Tutorial',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.menu_book_outlined),
+                  title: const Text('Re-watch Tutorial'),
+                  subtitle: const Text('Show first-time walkthrough again.'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _reopenTutorial();
+                  },
+                ),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.route_outlined),
+                  title: Text('How do I set boundaries?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Tap Quick Setup - Walk Perimeter or Import Drone Map on any property card.'),
+                    ),
+                  ],
+                ),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.tune_outlined),
+                  title: Text('What is Reach Mode?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Toggle Reach Mode to spray edges, bushes, and fences from the side without walking directly alongside them.'),
+                    ),
+                  ],
+                ),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.place_outlined),
+                  title: Text('How do I mark ant hills or spots?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Enable Spot Treatment mode, then tap Mark Spot to pin targeted applications on the map.'),
+                    ),
+                  ],
+                ),
+                const ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: EdgeInsets.only(bottom: 8),
+                  leading: Icon(Icons.cloud_off_outlined),
+                  title: Text('Offline mode?'),
+                  children: [
+                    ListTile(
+                      dense: true,
+                      title: Text('Tracking sessions save locally and sync automatically when you are back online.'),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -711,69 +744,67 @@ class _HomeDashboardState extends State<HomeDashboard> {
     final nameController = TextEditingController();
     final addressController = TextEditingController();
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Add New Property'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(labelText: 'Property Name'),
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Add New Property'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(labelText: 'Property Name'),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: addressController,
+                  decoration: const InputDecoration(labelText: 'Address'),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: addressController,
-              decoration: const InputDecoration(labelText: 'Address'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              AppPrimaryButton(
+                label: 'Add Property',
+                onPressed: () async {
+                  if (nameController.text.isEmpty ||
+                      addressController.text.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Please fill all fields')),
+                    );
+                    return;
+                  }
+                  try {
+                    final supabase = context.read<SupabaseService>();
+                    final limit = await supabase.checkCurrentUserMapLimit();
+                    if (!limit.allowed) {
+                      await _showMapLimitUpgradeDialog(limit);
+                      return;
+                    }
+                    await supabase.createProperty(
+                      name: nameController.text,
+                      address: addressController.text,
+                      ownerId: supabase.currentUserId!,
+                    );
+                    if (mounted) {
+                      Navigator.pop(context);
+                      await _loadData();
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Failed to add property: $e')),
+                      );
+                    }
+                  }
+                },
+              ),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameController.text.isEmpty ||
-                  addressController.text.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Please fill all fields')),
-                );
-                return;
-              }
-
-              try {
-                final supabase = context.read<SupabaseService>();
-                final limit = await supabase.checkCurrentUserMapLimit();
-                if (!limit.allowed) {
-                  await _showMapLimitUpgradeDialog(limit);
-                  return;
-                }
-
-                await supabase.createProperty(
-                  name: nameController.text,
-                  address: addressController.text,
-                  ownerId: supabase.currentUserId!,
-                );
-
-                if (mounted) {
-                  Navigator.pop(context);
-                  await _loadData();
-                }
-              } catch (e) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error: $e')),
-                );
-              }
-            },
-            child: const Text('Add Property'),
-          ),
-        ],
-      ),
-    );
+        );
   }
 
   void _startTrackingAction() {
@@ -1701,7 +1732,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
                       const SizedBox(height: 10),
                       TextField(
                         decoration: InputDecoration(
-                          hintText: 'Search by name or addressâ€¦',
+                          hintText: 'Search by name or address\u2026',
                           prefixIcon: const Icon(Icons.search),
                           border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(14)),
@@ -2565,9 +2596,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
                           ? Image.network(
                               property.orthomosaicUrl!,
                               fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => _mapPlaceholder(),
+                              errorBuilder: (_, __, ___) =>
+                                  _propertyThumbnail(property),
                             )
-                          : _mapPlaceholder(),
+                          : _propertyThumbnail(property),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -2578,13 +2610,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
                   const SizedBox(height: 4),
                   Text(property.address ?? 'No address'),
                   const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: () => _openProperty(property),
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('Start Tracking'),
-                    ),
+                  AppPrimaryButton(
+                    label: 'Start Tracking',
+                    icon: Icons.play_arrow,
+                    onPressed: () => _openProperty(property),
                   ),
                   if (_sessionsForProperty(property.id).isEmpty) ...[
                     const SizedBox(height: 10),
@@ -2820,10 +2849,11 @@ class _HomeDashboardState extends State<HomeDashboard> {
                   ],
                 ),
                 const SizedBox(height: 10),
-                OutlinedButton.icon(
+                AppPrimaryButton(
+                  label: 'Open Analytics',
+                  icon: Icons.analytics_outlined,
                   onPressed: () => setState(() => _selectedIndex = 2),
-                  icon: const Icon(Icons.analytics_outlined),
-                  label: const Text('Open Analytics'),
+                  isDense: true,
                 ),
               ],
             ),
@@ -2896,9 +2926,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
                         ? Image.network(
                             property.orthomosaicUrl!,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => _mapPlaceholder(),
+                            errorBuilder: (_, __, ___) =>
+                                _propertyThumbnail(property),
                           )
-                        : _mapPlaceholder(),
+                        : _propertyThumbnail(property),
                   ),
                 ),
               ),
@@ -2933,10 +2964,10 @@ class _HomeDashboardState extends State<HomeDashboard> {
                     const SizedBox(height: 12),
                     SizedBox(
                       width: double.infinity,
-                      child: FilledButton.icon(
+                      child: AppPrimaryButton(
+                        label: 'Start Tracking on This Property',
+                        icon: Icons.play_arrow,
                         onPressed: () => _openProperty(property),
-                        icon: const Icon(Icons.play_arrow, size: 28),
-                        label: const Text('Start Tracking on This Property'),
                       ),
                     ),
                     if (sessions.isEmpty) ...[
@@ -2950,6 +2981,117 @@ class _HomeDashboardState extends State<HomeDashboard> {
           ),
         ),
       ],
+    );
+  }
+
+  /// Extracts LatLng points from a GeoJSON-like map (Feature, Polygon, etc.).
+  List<LatLng> _extractBoundaryPoints(Map<String, dynamic>? geoJson) {
+    if (geoJson == null) return [];
+    final points = <LatLng>[];
+
+    void collect(dynamic node) {
+      if (node is Map<String, dynamic>) {
+        if (node.containsKey('coordinates')) collect(node['coordinates']);
+        if (node.containsKey('features') && node['features'] is List) {
+          for (final f in node['features'] as List) {
+            collect(f);
+          }
+        }
+        if (node.containsKey('geometry')) collect(node['geometry']);
+        return;
+      }
+      if (node is List) {
+        if (node.length >= 2 && node[0] is num && node[1] is num) {
+          points.add(LatLng(
+            (node[1] as num).toDouble(),
+            (node[0] as num).toDouble(),
+          ));
+          return;
+        }
+        for (final child in node) {
+          collect(child);
+        }
+      }
+    }
+
+    collect(geoJson);
+    return points;
+  }
+
+  /// Satellite thumbnail of the property fitted to its boundary.
+  /// Falls back to [_mapPlaceholder] when no boundary coordinates exist.
+  Widget _propertyThumbnail(Property property) {
+    // Try outer boundary first, then mapGeojson
+    var points = _extractBoundaryPoints(property.outerBoundary);
+    if (points.isEmpty) {
+      points = _extractBoundaryPoints(property.mapGeojson);
+    }
+    if (points.length < 3) return _mapPlaceholder();
+
+    // Compute bounding box with a small padding
+    var minLat = points.first.latitude;
+    var maxLat = points.first.latitude;
+    var minLng = points.first.longitude;
+    var maxLng = points.first.longitude;
+    for (final p in points) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+    // Add ~10% padding
+    final latPad = (maxLat - minLat) * 0.10;
+    final lngPad = (maxLng - minLng) * 0.10;
+    final bounds = LatLngBounds(
+      LatLng(minLat - latPad, minLng - lngPad),
+      LatLng(maxLat + latPad, maxLng + lngPad),
+    );
+    final center = LatLng(
+      (minLat + maxLat) / 2,
+      (minLng + maxLng) / 2,
+    );
+
+    // Close the polygon ring if needed
+    final ring = List<LatLng>.from(points);
+    if (ring.first.latitude != ring.last.latitude ||
+        ring.first.longitude != ring.last.longitude) {
+      ring.add(ring.first);
+    }
+
+    return IgnorePointer(
+      child: FlutterMap(
+        options: MapOptions(
+          initialCenter: center,
+          initialZoom: 18,
+          initialCameraFit: CameraFit.bounds(
+            bounds: bounds,
+            padding: const EdgeInsets.all(8),
+          ),
+          interactionOptions:
+              const InteractionOptions(flags: InteractiveFlag.none),
+        ),
+        children: [
+          TileLayer(
+            urlTemplate:
+                'https://mt.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+            userAgentPackageName: MapTileDefaults.userAgent,
+            errorImage: MapTileDefaults.offlineTileImage,
+            evictErrorTileStrategy:
+                EvictErrorTileStrategy.notVisibleRespectMargin,
+          ),
+          PolygonLayer(
+            polygons: [
+              Polygon(
+                points: ring,
+                color: const Color(0xFF4CAF50).withValues(alpha: 0.18),
+                borderColor: const Color(0xFF4CAF50),
+                borderStrokeWidth: 2,
+                isFilled: true,
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -2971,39 +3113,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
         children: [
           Positioned(
             top: 16,
-            left: 18,
-            right: 18,
-            child: Row(
-              children: [
-                Icon(
-                  Icons.layers_outlined,
-                  size: 16,
-                  color: scheme.onSurface.withValues(alpha: 0.55),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'Ortho Preview',
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: scheme.onSurface.withValues(alpha: 0.62),
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-              ],
-            ),
-          ),
-          Positioned(
-            left: 20,
-            right: 20,
-            top: 52,
-            bottom: 44,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border:
-                    Border.all(color: scheme.onSurface.withValues(alpha: 0.14)),
-                color: scheme.surface.withValues(alpha: 0.18),
-              ),
-              child: Stack(
+            left: 14,
+            right: 14,
+            child: Stack(
                 children: [
                   for (int i = 0; i < 5; i++)
                     Positioned(
@@ -3046,7 +3158,6 @@ class _HomeDashboardState extends State<HomeDashboard> {
                 ],
               ),
             ),
-          ),
           Positioned(
             left: 20,
             bottom: 14,
@@ -3087,7 +3198,7 @@ class _HomeDashboardState extends State<HomeDashboard> {
       children: [
         _buildHeroWithTexture(
           DashboardHeroCard(
-            welcomeText: 'Welcome back, ${_displayName()}',
+            welcomeText: 'Welcome back, ${_displayName()}',
             tierLabel: 'Corporate Admin Overview',
             activeMaps: '$mappedCount',
             lastJob: '${_formatPercent(avgCoverage)} team avg',
@@ -3239,18 +3350,20 @@ class _HomeDashboardState extends State<HomeDashboard> {
         Row(
           children: [
             Expanded(
-              child: FilledButton.icon(
+              child: AppPrimaryButton(
+                label: 'Add New Property',
+                icon: Icons.add_business_outlined,
                 onPressed: _showAddPropertyDialog,
-                icon: const Icon(Icons.add_business_outlined),
-                label: const Text('Add New Property'),
+                isDense: true,
               ),
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: OutlinedButton.icon(
+              child: AppPrimaryButton(
+                label: 'Assign Workers',
+                icon: Icons.group_add_outlined,
                 onPressed: _openTeamOverview,
-                icon: const Icon(Icons.group_add_outlined),
-                label: const Text('Assign Workers'),
+                isDense: true,
               ),
             ),
           ],
@@ -3348,22 +3461,26 @@ class _HomeDashboardState extends State<HomeDashboard> {
               message: addDisabled
                   ? 'Max maps reached for your tier - upgrade?'
                   : 'Add a new property',
-              child: FilledButton.icon(
+              child: AppPrimaryButton(
+                label: 'Add',
+                icon: Icons.add,
                 onPressed: addDisabled ? null : _showAddPropertyDialog,
-                icon: const Icon(Icons.add),
-                label: const Text('Add'),
+                isDense: true,
               ),
             ),
           ),
           const SizedBox(height: 10),
           TextField(
             decoration: InputDecoration(
-              hintText: 'Search propertiesâ€¦',
+              hintText: 'Search properties',
               prefixIcon: const Icon(Icons.search),
-              border:
-                  OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceVariant,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
               suffixIcon: _propertySearchQuery.isNotEmpty
                   ? IconButton(
                       icon: const Icon(Icons.clear),
@@ -3416,9 +3533,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
                                   property.orthomosaicUrl!,
                                   fit: BoxFit.cover,
                                   errorBuilder: (_, __, ___) =>
-                                      _mapPlaceholder(),
+                                      _propertyThumbnail(property),
                                 )
-                              : _mapPlaceholder(),
+                              : _propertyThumbnail(property),
                         ),
                       ),
                       Padding(
@@ -3517,10 +3634,11 @@ class _HomeDashboardState extends State<HomeDashboard> {
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 12),
-                FilledButton.icon(
+                AppPrimaryButton(
+                  label: 'Open Analytics',
+                  icon: Icons.analytics_outlined,
                   onPressed: () => Navigator.pushNamed(context, '/analytics'),
-                  icon: const Icon(Icons.analytics_outlined),
-                  label: const Text('Open Analytics'),
+                  isDense: true,
                 ),
               ],
             ),
@@ -3873,10 +3991,11 @@ class _HomeDashboardState extends State<HomeDashboard> {
               );
             }),
           const SizedBox(height: 8),
-          FilledButton.icon(
+          AppPrimaryButton(
+            label: 'Open Full Team Screen',
+            icon: Icons.open_in_new,
             onPressed: _openTeamOverview,
-            icon: const Icon(Icons.open_in_new),
-            label: const Text('Open Full Team Screen'),
+            isDense: true,
           ),
         ],
       ),
@@ -4017,7 +4136,42 @@ class _HomeDashboardState extends State<HomeDashboard> {
       body: _buildDashboardBackdrop(
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
-            : Stack(
+            : _loadError != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.cloud_off, size: 48, color: Colors.grey),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Something went wrong',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Unable to load your dashboard. Check your connection and try again.',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _isLoading = true;
+                                _loadError = null;
+                              });
+                              _loadData();
+                            },
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : Stack(
                 children: [
                   AnimatedSwitcher(
                     duration: const Duration(milliseconds: 220),
@@ -4115,6 +4269,15 @@ class _HomeDashboardState extends State<HomeDashboard> {
                                     : () => _syncPendingSessions(),
                                 child: const Text('Sync Now'),
                               ),
+                              if (_failedSessionCount > 0) ...[
+                                const SizedBox(width: 6),
+                                TextButton(
+                                  onPressed: _isSyncingPendingSessions
+                                      ? null
+                                      : _retryFailedSessions,
+                                  child: const Text('Retry Failed'),
+                                ),
+                              ],
                             ],
                           ),
                         ),

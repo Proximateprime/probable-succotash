@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../models/property_model.dart';
 import '../models/exclusion_zone_model.dart';
+import '../utils/map_tile_defaults.dart';
 import 'package:uuid/uuid.dart';
 
 class ExclusionZoneDrawScreen extends StatefulWidget {
@@ -377,6 +378,10 @@ class _ExclusionZoneDrawScreenState extends State<ExclusionZoneDrawScreen> {
               TileLayer(
                 urlTemplate:
                     'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+                userAgentPackageName: MapTileDefaults.userAgent,
+                errorImage: MapTileDefaults.offlineTileImage,
+                evictErrorTileStrategy:
+                    EvictErrorTileStrategy.notVisibleRespectMargin,
               ),
               // Render completed zones as red polygons
               if (_completedZones.isNotEmpty)

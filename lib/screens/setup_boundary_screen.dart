@@ -11,6 +11,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/property_model.dart';
 import '../services/supabase_service.dart';
+import '../utils/map_tile_defaults.dart';
 
 enum BoundarySetupStep { outer, zones }
 
@@ -1507,6 +1508,10 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
               children: [
                 TileLayer(
                   urlTemplate: _satelliteUrlTemplate,
+                  userAgentPackageName: MapTileDefaults.userAgent,
+                  errorImage: MapTileDefaults.offlineTileImage,
+                  evictErrorTileStrategy:
+                      EvictErrorTileStrategy.notVisibleRespectMargin,
                 ),
                 if (_outerBoundary.length >= 4)
                   PolygonLayer(
@@ -1799,7 +1804,7 @@ class _SetupBoundaryScreenState extends State<SetupBoundaryScreen> {
                           value: _showGpsDebug,
                           contentPadding: EdgeInsets.zero,
                           title: const Text('Show GPS Debug'),
-                          subtitle: Text('Filtered ${_filteredWalkPoints} bad points'),
+                          subtitle: Text('Filtered $_filteredWalkPoints bad points'),
                           onChanged: (value) => setState(() => _showGpsDebug = value),
                         ),
                         if (_pathNotClosedWarning)

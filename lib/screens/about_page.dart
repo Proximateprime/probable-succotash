@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../utils/app_theme.dart';
 import '../widgets/app_ui.dart';
 import 'bug_report_screen.dart';
 import 'login_screen.dart';
@@ -29,16 +31,8 @@ class AboutPage extends StatelessWidget {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: isDark
-                ? const [
-                    Color(0xFF0F1511),
-                    Color(0xFF111B18),
-                    Color(0xFF121A21),
-                  ]
-                : const [
-                    Color(0xFFF5F9F5),
-                    Color(0xFFEAF5FF),
-                    Color(0xFFF5F5F5),
-                  ],
+                ? AppTheme.pageBgDark
+                : AppTheme.pageBgLight,
           ),
         ),
         child: SafeArea(
@@ -72,6 +66,17 @@ class AboutPage extends StatelessWidget {
                 delayMs: 420,
                 child: _buildCtas(context, colorScheme),
               ),
+              const SizedBox(height: 16),
+              _animatedSection(
+                delayMs: 500,
+                child: _buildSupportSection(context),
+              ),
+              const SizedBox(height: 16),
+              _animatedSection(
+                delayMs: 580,
+                child: _buildLegalSection(context),
+              ),
+              const SizedBox(height: 24),
             ],
           ),
         ),
@@ -102,16 +107,8 @@ class AboutPage extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: isDark
-              ? const [
-                  Color(0xFF153420),
-                  Color(0xFF1A4A31),
-                  Color(0xFF183B5C),
-                ]
-              : const [
-                  Color(0xFF173A22),
-                  Color(0xFF1F5B39),
-                  Color(0xFF1B4F7F),
-                ],
+              ? AppTheme.heroGradientDark
+              : AppTheme.heroGradientLight,
         ),
         boxShadow: [
           BoxShadow(
@@ -500,6 +497,128 @@ class AboutPage extends StatelessWidget {
                 'Report a Bug',
                 style: TextStyle(color: colorScheme.error),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSupportSection(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionHeader(
+            context,
+            icon: Icons.support_agent_outlined,
+            title: 'Support & Info',
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Version 1.0.0',
+            style: GoogleFonts.roboto(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: colorScheme.onSurface.withValues(alpha: 0.7),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _linkRow(
+            context,
+            icon: Icons.email_outlined,
+            label: 'support@spraymappro.com',
+            onTap: () => launchUrl(Uri.parse('mailto:support@spraymappro.com')),
+          ),
+          const Divider(height: 1),
+          _linkRow(
+            context,
+            icon: Icons.privacy_tip_outlined,
+            label: 'Privacy Policy',
+            onTap: () => launchUrl(
+              Uri.parse('https://spraymappro.com/privacy'),
+              mode: LaunchMode.externalApplication,
+            ),
+          ),
+          const Divider(height: 1),
+          _linkRow(
+            context,
+            icon: Icons.gavel_outlined,
+            label: 'Terms of Service',
+            onTap: () => launchUrl(
+              Uri.parse('https://spraymappro.com/terms'),
+              mode: LaunchMode.externalApplication,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _linkRow(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: colorScheme.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                label,
+                style: GoogleFonts.roboto(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: colorScheme.primary,
+                ),
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              size: 20,
+              color: colorScheme.onSurface.withValues(alpha: 0.4),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLegalSection(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Column(
+        children: [
+          Text(
+            'SprayMap Pro is built with Flutter, Supabase, turf.dart, '
+            'geolocator, flutter_map, and other open-source libraries.',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.roboto(
+              fontSize: 13,
+              height: 1.5,
+              color: colorScheme.onSurface.withValues(alpha: 0.55),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '© ${DateTime.now().year} SprayMap Pro. All rights reserved.',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.roboto(
+              fontSize: 12,
+              color: colorScheme.onSurface.withValues(alpha: 0.4),
             ),
           ),
         ],

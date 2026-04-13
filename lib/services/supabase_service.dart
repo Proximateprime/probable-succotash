@@ -586,6 +586,18 @@ class SupabaseService {
     }
   }
 
+  /// Delete a property and sync active maps count.
+  Future<void> deleteProperty(String propertyId) async {
+    try {
+      await _client.from('properties').delete().eq('id', propertyId);
+      _logger.i('Property deleted: $propertyId');
+      await syncCurrentUserActiveMapsCount();
+    } catch (e) {
+      _logger.e('Delete property error: $e');
+      rethrow;
+    }
+  }
+
   /// Update the assigned_to array for a property (assign workers)
   Future<void> updatePropertyAssignments({
     required String propertyId,

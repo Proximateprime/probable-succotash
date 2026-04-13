@@ -14,6 +14,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/session_model.dart';
 import '../services/storage_service.dart';
 import '../services/supabase_service.dart';
+import '../utils/app_theme.dart';
 
 class ExportScreen extends StatefulWidget {
   final String sessionId;
@@ -332,7 +333,7 @@ class _ExportScreenState extends State<ExportScreen> {
           margin: const pw.EdgeInsets.all(32),
           build: (context) => [
             pw.Text(
-              'CoverTrack Proof of Coverage',
+              'SprayMap Pro Proof of Coverage',
               style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold),
             ),
             pw.SizedBox(height: 20),
@@ -572,7 +573,7 @@ class _ExportScreenState extends State<ExportScreen> {
         _success = true;
       });
 
-      debugPrint(
+      logger.i(
         'Uploading PDF for property ${widget.propertyId}, session ${widget.sessionId}',
       );
 
@@ -585,7 +586,7 @@ class _ExportScreenState extends State<ExportScreen> {
       );
 
       if (pdfUrl != null) {
-        debugPrint('PDF upload successful.');
+        logger.i('PDF upload successful.');
 
         // Save signed URL to tracking_sessions table
         await supabase.updateSessionProofPdfUrl(
@@ -593,7 +594,7 @@ class _ExportScreenState extends State<ExportScreen> {
           proofPdfUrl: pdfUrl,
         );
 
-        debugPrint('PDF URL stored on session ${widget.sessionId}.');
+        logger.i('PDF URL stored on session ${widget.sessionId}.');
 
         setState(() {
           _success = true;
@@ -609,7 +610,7 @@ class _ExportScreenState extends State<ExportScreen> {
           );
         }
       } else {
-        debugPrint('PDF upload failed.');
+        logger.w('PDF upload failed.');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(

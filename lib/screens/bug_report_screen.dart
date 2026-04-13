@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -53,6 +54,7 @@ class _BugReportScreenState extends State<BugReportScreen> {
         userEmail: _emailController.text.trim().isEmpty
             ? null
             : _emailController.text.trim(),
+        platformInfo: _buildPlatformInfo(),
       );
 
       if (mounted) {
@@ -80,6 +82,21 @@ class _BugReportScreenState extends State<BugReportScreen> {
         });
       }
     }
+  }
+
+  String _buildPlatformInfo() {
+    final parts = <String>[];
+    if (kIsWeb) {
+      parts.add('Platform: Web');
+    } else {
+      try {
+        parts.add('OS: ${defaultTargetPlatform.name}');
+      } catch (_) {
+        parts.add('Platform: unknown');
+      }
+    }
+    parts.add('Build mode: ${kReleaseMode ? 'release' : kProfileMode ? 'profile' : 'debug'}');
+    return parts.join(' | ');
   }
 
   @override

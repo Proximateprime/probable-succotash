@@ -26,21 +26,26 @@ class AppCard extends StatelessWidget {
   const AppCard({
     Key? key,
     required this.child,
-    this.padding = const EdgeInsets.all(AppTheme.spaceMd),
-    this.elevation = 2,
+    this.padding = const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+    this.elevation = 3,
     this.margin,
+    this.radius = 16,
   }) : super(key: key);
 
   final Widget child;
   final EdgeInsetsGeometry padding;
   final double elevation;
   final EdgeInsetsGeometry? margin;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
     return Card(
       elevation: elevation,
       margin: margin,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(radius),
+      ),
       child: Padding(
         padding: padding,
         child: child,
@@ -49,27 +54,57 @@ class AppCard extends StatelessWidget {
   }
 }
 
+
 class AppPrimaryButton extends StatelessWidget {
+  final String label;
+  final VoidCallback? onPressed;
+  final IconData? icon;
+  final bool isDense;
+  final bool isHighContrast;
+  final bool isLoading;
+
   const AppPrimaryButton({
     Key? key,
     required this.label,
     required this.onPressed,
     this.icon,
+    this.isDense = false,
+    this.isHighContrast = false,
     this.isLoading = false,
   }) : super(key: key);
 
-  final String label;
-  final VoidCallback? onPressed;
-  final IconData? icon;
-  final bool isLoading;
-
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final height = isDense ? 48.0 : 56.0;
+    final bgColor = isHighContrast
+        ? Colors.black
+        : theme.colorScheme.primary;
+    final fgColor = isHighContrast
+        ? Colors.white
+        : theme.colorScheme.onPrimary;
+
+    final style = ElevatedButton.styleFrom(
+      minimumSize: Size.fromHeight(height),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      backgroundColor: bgColor,
+      foregroundColor: fgColor,
+      textStyle: theme.textTheme.titleMedium?.copyWith(
+        fontWeight: FontWeight.w700,
+        fontSize: isDense ? 16 : 18,
+        letterSpacing: 0.1,
+      ),
+      elevation: isHighContrast ? 2 : 0,
+    );
+
     final child = isLoading
         ? const SizedBox(
-            height: 18,
-            width: 18,
-            child: CircularProgressIndicator(strokeWidth: 2),
+            height: 22,
+            width: 22,
+            child: CircularProgressIndicator(strokeWidth: 2.2),
           )
         : Text(label);
 
@@ -78,16 +113,17 @@ class AppPrimaryButton extends StatelessWidget {
         width: double.infinity,
         child: ElevatedButton.icon(
           onPressed: isLoading ? null : onPressed,
-          icon: Icon(icon),
+          icon: Icon(icon, size: isDense ? 22 : 26),
           label: child,
+          style: style,
         ),
       );
     }
-
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
         onPressed: isLoading ? null : onPressed,
+        style: style,
         child: child,
       ),
     );

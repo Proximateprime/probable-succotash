@@ -99,6 +99,28 @@ class OfflineSessionService {
     return _allEntries().where((entry) => _statusOf(entry) == 'failed').length;
   }
 
+  /// Re-queue all failed sessions so they are retried on the next sync.
+  Future<int> retryFailedSessions() async {
+    return _withWriteLock(() async {
+      await _ensureInitialized();
+      final failed = _allEntries()
+          .where((entry) => _statusOf(entry) == 'failed')
+          .toList();
+
+      for (final record in failed) {
+        final sessionId = _idOf(record);
+        if (sessionId == null) continue;
+        await _box!.put(sessionId, {
+          ...record,
+          'status': 'queued',
+          'retry_count': 0,
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+      }
+      return failed.length;
+    });
+  }
+
   Future<void> enqueueSession(Map<String, dynamic> sessionPayload) async {
     await _withWriteLock(() async {
       await _ensureInitialized();

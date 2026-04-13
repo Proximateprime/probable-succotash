@@ -25,6 +25,7 @@ import '../services/network_status_service.dart';
 import '../services/offline_session_service.dart';
 import '../services/recommended_path_service.dart';
 import '../services/supabase_service.dart';
+import '../utils/map_tile_defaults.dart';
 import '../widgets/app_ui.dart';
 import 'export_screen.dart';
 import 'job_summary_screen.dart';
@@ -62,6 +63,7 @@ class TrackingScreen extends StatefulWidget {
 class _TrackingScreenState extends State<TrackingScreen> {
   static const String _satelliteUrlTemplate =
       'https://mt.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
+
   static const MethodChannel _gnssSupportChannel =
       MethodChannel('spraymap/gnss_support');
   static const EventChannel _rawGnssEventChannel =
@@ -177,6 +179,19 @@ class _TrackingScreenState extends State<TrackingScreen> {
   double? _chemicalCostPerUnit;
   final Set<int> _triggeredLowProductThresholds = <int>{};
   int? _activeLowProductThreshold;
+  bool _showGuidanceGrid = false;
+  // Screen-on toggle: when true, wakelock keeps the display on during tracking.
+  // When false, GPS tracking continues with the screen off for battery savings.
+  bool _keepScreenOn = true;
+  // Blackout Mode: dims the entire screen to near-black to save battery and
+  // reduce glare during field use. GPS tracking continues normally.
+  // On PWAs this is purely cosmetic (the OS still drives the backlight), but
+  // combined with "Keep Screen Always On" it minimises OLED power draw and
+  // eliminates distracting UI while walking a route.
+  bool _blackoutMode = false;
+  // Tolerance in degrees for Douglas-Peucker polyline simplification.
+  // ~0.000005° ≈ 0.5 m — smooths visual jitter without losing meaningful shape.
+  static const double _dpToleranceDeg = 0.000005;
 
   @override
   void initState() {
@@ -212,6 +227,68 @@ class _TrackingScreenState extends State<TrackingScreen> {
             .reduce((a, b) => a + b) /
         _gpsSmoothingBuffer.length;
     return LatLng(avgLat, avgLng);
+  }
+
+  // ── Path Smoothing for Rendering ──────────────────────────────────────────
+  // Battery-friendly Douglas-Peucker simplification: reduces the number of
+  // rendered points so circles and curves look smooth instead of jagged,
+  // while keeping the full _paths list untouched for accurate coverage %.
+
+  /// Douglas-Peucker polyline simplification.
+  /// [tolerance] is in the same unit as the coordinates (degrees).
+  static List<LatLng> _douglasPeucker(List<LatLng> points, double tolerance) {
+    if (points.length < 3) return List.of(points);
+
+    // Find the point farthest from the line between first and last.
+    double maxDist = 0;
+    int index = 0;
+    final first = points.first;
+    final last = points.last;
+    for (int i = 1; i < points.length - 1; i++) {
+      final d = _perpendicularDistance(points[i], first, last);
+      if (d > maxDist) {
+        maxDist = d;
+        index = i;
+      }
+    }
+
+    if (maxDist > tolerance) {
+      final left = _douglasPeucker(points.sublist(0, index + 1), tolerance);
+      final right = _douglasPeucker(points.sublist(index), tolerance);
+      return [...left.sublist(0, left.length - 1), ...right];
+    }
+
+    return [first, last];
+  }
+
+  /// Perpendicular distance from [point] to the line segment [a]→[b], in degrees.
+  static double _perpendicularDistance(LatLng point, LatLng a, LatLng b) {
+    final dx = b.longitude - a.longitude;
+    final dy = b.latitude - a.latitude;
+    if (dx == 0 && dy == 0) {
+      // a and b are the same point.
+      final ex = point.longitude - a.longitude;
+      final ey = point.latitude - a.latitude;
+      return math.sqrt(ex * ex + ey * ey);
+    }
+    final num = (dy * point.longitude -
+            dx * point.latitude +
+            b.longitude * a.latitude -
+            b.latitude * a.longitude)
+        .abs();
+    final den = math.sqrt(dy * dy + dx * dx);
+    return num / den;
+  }
+
+  /// Returns a visually smoothed version of the coverage path for map rendering.
+  /// Uses Douglas-Peucker to intelligently reduce points so curves and circles
+  /// look clean. The full _paths list is kept for accurate coverage % math.
+  List<LatLng> _smoothedRenderPath() {
+    if (_paths.length < 3) {
+      return _paths.map((p) => LatLng(p.latitude, p.longitude)).toList();
+    }
+    final raw = _paths.map((p) => LatLng(p.latitude, p.longitude)).toList();
+    return _douglasPeucker(raw, _dpToleranceDeg);
   }
 
   // ── Spot Treatment ────────────────────────────────────────────────────────
@@ -355,7 +432,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
     _startTracking();
     _startElapsedTimer();
     // Keep screen alive while actively tracking — released on stop/pause/dispose.
-    WakelockPlus.enable();
+    // Respects the user's "Keep Screen Always On" toggle.
+    if (_keepScreenOn) WakelockPlus.enable();
   }
 
   Future<void> _hydrateFromOfflineDraft() async {
@@ -863,6 +941,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
     final mapService = context.read<MapService>();
     _positionStream?.cancel();
 
+    // Center map on current GPS position when tracking starts
+    if (_latitude != 0 || _longitude != 0) {
+      _mapController.move(LatLng(_latitude, _longitude), _mapController.camera.zoom);
+    } else {
+      _primeCurrentLocation();
+    }
+
     final intervalSeconds = _highAccuracyGnssEnabled ? 1 : 2;
     final distanceFilterMeters = _highAccuracyGnssEnabled ? 0 : 1;
 
@@ -1151,8 +1236,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
       if (_isTracking) {
         _autoPausedByInactivity = false;
         _lastMovementAt ??= DateTime.now();
-        // Re-enable wakelock when resuming so the screen stays on while walking.
-        WakelockPlus.enable();
+        // Re-enable wakelock when resuming — only if the user wants screen on.
+        if (_keepScreenOn) WakelockPlus.enable();
       } else {
         // Release wakelock while paused — user is reviewing, not walking.
         WakelockPlus.disable();
@@ -2817,15 +2902,17 @@ Future<void> _stopTracking() async {
   }
 
   LatLng _initialCenter() {
+    // Prefer current GPS position so tracking starts where the user actually
+    // stands, not at the geometric centre of the property boundary.
+    if (_latitude != 0 || _longitude != 0) {
+      return LatLng(_latitude, _longitude);
+    }
+
     if (_mapBounds != null) {
       return LatLng(
         (_mapBounds!.north + _mapBounds!.south) / 2,
         (_mapBounds!.east + _mapBounds!.west) / 2,
       );
-    }
-
-    if (_latitude != 0 || _longitude != 0) {
-      return LatLng(_latitude, _longitude);
     }
 
     return const LatLng(0, 0);
@@ -2837,9 +2924,9 @@ Future<void> _stopTracking() async {
 
   Widget _statChip({required String label, required String value}) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.22),
+        color: Colors.black.withValues(alpha: 0.28),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
       ),
@@ -2850,6 +2937,7 @@ Future<void> _stopTracking() async {
             label,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
                   color: Colors.white70,
+                  fontSize: 11,
                 ),
           ),
           Text(
@@ -2857,6 +2945,7 @@ Future<void> _stopTracking() async {
             style: Theme.of(context).textTheme.labelLarge?.copyWith(
                   color: Colors.white,
                   fontWeight: FontWeight.w700,
+                  fontSize: 14,
                 ),
           ),
         ],
@@ -2864,522 +2953,213 @@ Future<void> _stopTracking() async {
     );
   }
 
+  // ── Compact Bottom Overlay ─────────────────────────────────────────────
+  // LAYOUT CHANGE: The overlay is now ultra-compact so the map takes ≈75-80 %
+  // of the screen. Only the essentials stay visible:
+  //   • Status pill (LIVE / PAUSED + elapsed time)
+  //   • Coverage % · Distance · Swath width (single info row)
+  //   • Three action buttons: Pause, More ▾, Stop
+  // Everything else (swath picker, undo, mark spot, stat details, product
+  // status) lives in the "More ▾" bottom sheet.
+
   Widget _buildBottomOverlay() {
     final coverage = _liveCoveragePercent();
     final distance = _distanceMiles();
-    final sizeLabel = _reachModeEnabled ? 'Reach Depth' : 'Swath Width';
     final summary = _sessionSummary ?? _buildSessionSummary();
-    final remainingPercent = _remainingProductPercent();
     final isCriticalProduct = _activeLowProductThreshold == 5;
     final isLowProduct = _activeLowProductThreshold == 10;
-    final isHeadsUpProduct = _activeLowProductThreshold == 20;
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.48),
+        color: Colors.black.withValues(alpha: 0.62),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Auto-pause banner (only shows when relevant)
           if (_autoPausedByInactivity && !_isTracking) ...[
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               decoration: BoxDecoration(
                 color: Colors.orange.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Colors.orange.withValues(alpha: 0.6),
-                ),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.6)),
               ),
               child: Row(
                 children: [
-                  const Icon(
-                    Icons.pause_circle_outline,
-                    color: Colors.white,
-                  ),
-                  const SizedBox(width: 8),
+                  const Icon(Icons.pause_circle_outline, color: Colors.white, size: 18),
+                  const SizedBox(width: 6),
                   const Expanded(
-                    child: Text(
-                      'Paused - resume?',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+                    child: Text('Paused — resume?',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
                   ),
-                  TextButton(
-                    onPressed: _togglePause,
-                    child: const Text('Resume'),
-                  ),
+                  TextButton(onPressed: _togglePause, child: const Text('Resume')),
                 ],
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
           ],
-          if (summary.tankCapacityGallons != null &&
+          // Screen-off banner (compact)
+          if (!_keepScreenOn && _isTracking && !_isSessionEnded) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1565C0).withValues(alpha: 0.22),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.screen_lock_portrait, color: Colors.white70, size: 14),
+                  SizedBox(width: 4),
+                  Text('Screen-off — GPS recording',
+                      style: TextStyle(color: Colors.white70, fontSize: 11)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+          ],
+          // Critical product warning (shown inline only when low)
+          if ((isLowProduct || isCriticalProduct) &&
+              summary.tankCapacityGallons != null &&
               summary.estimatedProductUsed != null) ...[
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                 color: isCriticalProduct
                     ? Colors.red.withValues(alpha: 0.20)
-                    : isLowProduct
-                        ? Colors.orange.withValues(alpha: 0.18)
-                        : isHeadsUpProduct
-                            ? Colors.yellow.withValues(alpha: 0.14)
-                            : Colors.white.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: isCriticalProduct
-                      ? Colors.red.withValues(alpha: 0.65)
-                      : isLowProduct
-                          ? Colors.orange.withValues(alpha: 0.5)
-                          : isHeadsUpProduct
-                              ? Colors.yellow.withValues(alpha: 0.5)
-                              : Colors.white.withValues(alpha: 0.12),
-                ),
+                    : Colors.orange.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(8),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  Text(
-                    _activeLowProductThreshold == null
-                        ? 'Estimated product status'
-                        : 'Low product - ~${(summary.remainingProduct ?? 0).clamp(0.0, summary.tankCapacityGallons ?? 0).toStringAsFixed(1)} gal left',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Used ${summary.estimatedProductUsed!.toStringAsFixed(2)} ${summary.applicationRateUnit} of ${summary.tankCapacityGallons!.toStringAsFixed(1)} gal capacity.',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.white,
-                        ),
-                  ),
-                  if (summary.remainingProduct != null)
-                    Text(
-                      'Remaining: ${summary.remainingProduct!.toStringAsFixed(2)} ${summary.applicationRateUnit}${remainingPercent == null ? '' : ' (${remainingPercent.toStringAsFixed(0)}%)'}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.white70,
-                          ),
+                  Icon(Icons.warning_amber,
+                      color: isCriticalProduct ? Colors.red : Colors.orange, size: 16),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      '${(summary.remainingProduct ?? 0).clamp(0.0, summary.tankCapacityGallons ?? 0).toStringAsFixed(1)} gal left',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
                     ),
-                  if (isLowProduct || isCriticalProduct) ...[
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: OutlinedButton(
-                        onPressed: _savePartialSession,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: BorderSide(
-                            color: Colors.orange.withValues(alpha: 0.7),
-                          ),
-                        ),
-                        child: const Text('Stop & Save'),
-                      ),
+                  ),
+                  TextButton(
+                    onPressed: _savePartialSession,
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.orange,
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
                     ),
-                  ],
+                    child: const Text('Save', style: TextStyle(fontSize: 12)),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 4),
           ],
+          // ── Single-row info bar: status pill | coverage | distance | swath ──
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '$sizeLabel: ${AppFormat.feet(_swathWidthFeet)}',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
+              // Status pill
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: _isTracking ? Colors.green : Colors.orange,
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
-                  _isTracking
-                      ? 'LIVE ${_elapsedLabel()}'
-                      : 'PAUSED ${_elapsedLabel()}',
+                  _isTracking ? 'LIVE ${_elapsedLabel()}' : 'PAUSED ${_elapsedLabel()}',
                   style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
+                      color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Coverage %
+              Text(
+                '${coverage.toStringAsFixed(0)}%',
+                style: const TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                AppFormat.miles(distance),
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const Spacer(),
+              // Swath width chip (tap opens More sheet)
+              GestureDetector(
+                onTap: _isSessionEnded ? null : _showMoreSheet,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
+                  ),
+                  child: Text(
+                    '${AppFormat.feet(_swathWidthFeet)} swath',
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
                   ),
                 ),
               ),
             ],
           ),
-          if (_sprayableZones().isNotEmpty) ...[
-            const SizedBox(height: 10),
-            DropdownButtonFormField<String>(
-              value: _activeZoneSelection,
-              dropdownColor: Colors.black.withValues(alpha: 0.92),
-              style: const TextStyle(color: Colors.white),
-              iconEnabledColor: Colors.white,
-              decoration: InputDecoration(
-                labelText: 'Active Spray Zone',
-                labelStyle: const TextStyle(color: Colors.white70),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(
-                    color: Colors.white.withValues(alpha: 0.3),
-                  ),
-                ),
-                focusedBorder: const OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.white),
-                ),
-              ),
-              items: [
-                const DropdownMenuItem<String>(
-                  value: _allSprayableSelectionId,
-                  child: Text('All Sprayable Zones'),
-                ),
-                ..._sprayableZones().map(
-                  (zone) => DropdownMenuItem<String>(
-                    value: zone.id,
-                    child: Text('Spraying ${zone.name}'),
-                  ),
-                ),
-              ],
-              onChanged: _isSessionEnded
-                  ? null
-                  : (value) {
-                      if (value == null) return;
-                      setState(() => _activeZoneSelection = value);
-                    },
-            ),
-          ],
           const SizedBox(height: 8),
-          SwitchListTile.adaptive(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            title: Text(
-              'Reach Mode (Off-to-the-Side)',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                  ),
-            ),
-            subtitle: Text(
-              _reachModeEnabled
-                  ? 'Reach Mode - facing ${_headingDirectionLabel(_effectiveReachHeadingDegrees())}'
-                  : 'Off - normal full circle coverage',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Colors.white70,
-                  ),
-            ),
-            value: _reachModeEnabled,
-            onChanged: _isSessionEnded
-                ? null
-                : (enabled) {
-                    setState(() {
-                      _reachModeEnabled = enabled;
-                    });
-                  },
-          ),
-          if (_reachModeEnabled)
-            Row(
-              children: [
-                IconButton(
-                  onPressed: () => _nudgeReachHeading(-15),
-                  icon: const Icon(Icons.rotate_left),
-                  color: Colors.white,
-                  tooltip: 'Rotate spray direction left',
-                ),
-                Expanded(
-                  child: Text(
-                    _isCompassAvailable
-                        ? 'Compass + manual trim: ${_headingDirectionLabel(_effectiveReachHeadingDegrees())}'
-                        : 'Manual direction: ${_headingDirectionLabel(_effectiveReachHeadingDegrees())}',
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                  ),
-                ),
-                IconButton(
-                  onPressed: () => _nudgeReachHeading(15),
-                  icon: const Icon(Icons.rotate_right),
-                  color: Colors.white,
-                  tooltip: 'Rotate spray direction right',
-                ),
-              ],
-            ),
-          const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SegmentedButton<String>(
-              showSelectedIcon: false,
-              multiSelectionEnabled: false,
-              selected: <String>{_swathSegmentSelection},
-              segments: [
-                ..._presetSwathFeet.map(
-                  (feet) => ButtonSegment<String>(
-                    value: feet.toStringAsFixed(1),
-                    label: Text('${feet.toStringAsFixed(1)} ft'),
-                  ),
-                ),
-                const ButtonSegment<String>(
-                  value: 'custom',
-                  label: Text('Custom'),
-                ),
-              ],
-              onSelectionChanged: _isSessionEnded
-                  ? null
-                  : (selected) async {
-                      final value = selected.first;
-                      if (value == 'custom') {
-                        await _openCustomSwathPicker();
-                        return;
-                      }
-                      final parsed = double.tryParse(value);
-                      if (parsed == null) return;
-                      _setSwathWidthFeet(parsed);
-                    },
-            ),
-          ),
-          if (_isCustomSwathSelection)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                'Custom precision: ${_swathWidthFeet.toStringAsFixed(1)} ft',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Colors.white70,
-                    ),
-              ),
-            ),
-          SwitchListTile.adaptive(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            title: Text(
-              'Overlap Heatmap',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                  ),
-            ),
-            subtitle: Text(
-              'Highlights multi-pass zones in red for overlap correction.',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Colors.white70,
-                  ),
-            ),
-            value: _showOverlapHeatmap,
-            onChanged: _isSessionEnded
-                ? null
-                : (enabled) {
-                    setState(() => _showOverlapHeatmap = enabled);
-                  },
-          ),
-          // ── Spot Treatment Mode ─────────────────────────────────────────
-          const Divider(color: Colors.white24, height: 20),
-          SwitchListTile.adaptive(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            title: Text(
-              'Spot Treatment Mode',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                  ),
-            ),
-            subtitle: Text(
-              _spotTreatmentMode
-                  ? '${_spotTreatments.length} spot${_spotTreatments.length != 1 ? 's' : ''} marked'
-                  : 'Mark individual treatment spots on the map',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Colors.white70,
-                  ),
-            ),
-            value: _spotTreatmentMode,
-            onChanged: _isSessionEnded
-                ? null
-                : (v) => setState(() => _spotTreatmentMode = v),
-          ),
-          if (_spotTreatmentMode) ...[
-            const SizedBox(height: 6),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _isSessionEnded ? null : _markSpot,
-                icon: const Icon(Icons.add_location_alt_outlined),
-                label: Text(
-                  'Mark Spot  ·  ${_spotRadiusFeet.toStringAsFixed(0)} ft radius',
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6A1B9A),
-                  foregroundColor: Colors.white,
-                  minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 52),
-                  textStyle: TextStyle(
-                      fontSize: widget.outdoorMode ? 16 : 15,
-                      fontWeight: FontWeight.w700),
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Text(
-                  '1 ft',
-                  style: Theme.of(context)
-                      .textTheme
-                      .labelSmall
-                      ?.copyWith(color: Colors.white70),
-                ),
-                Expanded(
-                  child: Slider(
-                    value: _spotRadiusFeet,
-                    min: 1.0,
-                    max: 10.0,
-                    divisions: 9,
-                    label: '${_spotRadiusFeet.toStringAsFixed(0)} ft',
-                    activeColor: const Color(0xFF6A1B9A),
-                    onChanged: _isSessionEnded
-                        ? null
-                        : (v) => setState(() => _spotRadiusFeet = v),
-                  ),
-                ),
-                Text(
-                  '10 ft',
-                  style: Theme.of(context)
-                      .textTheme
-                      .labelSmall
-                      ?.copyWith(color: Colors.white70),
-                ),
-              ],
-            ),
-          ],
-          Tooltip(
-            message: _isRawGnssSupported
-                ? 'Capture raw GNSS measurements and higher cadence GPS updates.'
-                : _canUseHighPrecisionMode
-                    ? 'Use higher cadence mobile GPS updates (raw GNSS unavailable in this runtime).'
-                    : 'Use an Android device for high-precision mode.',
-            child: SwitchListTile.adaptive(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: Text(
-                'High-Precision GPS Mode',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: _canUseHighPrecisionMode
-                          ? Colors.white
-                          : Colors.white70,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-              subtitle: Text(
-                _isCheckingGnssSupport
-                    ? 'Checking device GNSS capability...'
-                    : _isRawGnssSupported
-                        ? 'Raw GNSS available on this device (best quality).'
-                        : _canUseHighPrecisionMode
-                            ? 'Using high-frequency device GPS (no raw GNSS channel).'
-                            : 'Unsupported on this device or platform.',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Colors.white70,
-                    ),
-              ),
-              value: _highAccuracyGnssEnabled,
-              onChanged: (!_canUseHighPrecisionMode || _isSessionEnded)
-                  ? null
-                  : (enabled) => _setHighAccuracyGnssEnabled(enabled),
-            ),
-          ),
-          const SizedBox(height: 6),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _statChip(
-                  label: 'Lat / Lng',
-                  value: AppFormat.latLng(_latitude, _longitude),
-                ),
-                const SizedBox(width: 8),
-                _statChip(
-                  label: 'Accuracy',
-                  value: AppFormat.meters(_accuracy),
-                ),
-                const SizedBox(width: 8),
-                _statChip(
-                  label: 'Coverage',
-                  value: AppFormat.percent(coverage),
-                ),
-                const SizedBox(width: 8),
-                _statChip(
-                  label: 'Distance',
-                  value: AppFormat.miles(distance),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
+          // ── Action buttons: Pause | More ▾ | Stop ──
+          // Three buttons give the operator everything needed at a glance.
+          // "More ▾" opens a bottom sheet with swath picker, undo, mark spot,
+          // and detailed stats — keeping the main overlay minimal.
           Row(
             children: [
               Expanded(
+                flex: 3,
                 child: ElevatedButton.icon(
                   onPressed: _togglePause,
-                  icon: Icon(_isTracking ? Icons.pause : Icons.play_arrow),
-                  label: Text(_isTracking
-                      ? 'Pause'
-                      : (_autoPausedByInactivity
-                          ? 'Resume (Auto-paused)'
-                          : 'Resume')),
+                  icon: Icon(_isTracking ? Icons.pause : Icons.play_arrow, size: 22),
+                  label: Text(_isTracking ? 'Pause' : 'Resume',
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,
-                    minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 50),
-                    textStyle: widget.outdoorMode
-                        ? const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700)
-                        : null,
+                    minimumSize: const Size(0, 52),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
+              // "More" — opens the detail bottom sheet
               Expanded(
+                flex: 2,
                 child: ElevatedButton.icon(
-                  onPressed: _undoLast30Seconds,
-                  icon: const Icon(Icons.undo_outlined),
-                  label: const Text('Undo 30s'),
+                  onPressed: _isSessionEnded ? null : _showMoreSheet,
+                  icon: const Icon(Icons.expand_less, size: 20),
+                  label: const Text('More',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF455A64),
                     foregroundColor: Colors.white,
-                    minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 50),
-                    textStyle: widget.outdoorMode
-                        ? const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700)
-                        : null,
+                    minimumSize: const Size(0, 52),
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
+                flex: 2,
                 child: ElevatedButton.icon(
                   onPressed: _stopTracking,
-                  icon: const Icon(Icons.stop_circle),
-                  label: const Text('Stop & Export'),
+                  icon: const Icon(Icons.stop_circle, size: 20),
+                  label: const Text('Stop',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red,
                     foregroundColor: Colors.white,
-                    minimumSize: Size.fromHeight(widget.outdoorMode ? 64 : 50),
-                    textStyle: widget.outdoorMode
-                        ? const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w700)
-                        : null,
+                    minimumSize: const Size(0, 52),
                   ),
                 ),
               ),
@@ -3389,6 +3169,167 @@ Future<void> _stopTracking() async {
       ),
     );
   }
+
+  // ── "More ▾" Bottom Sheet ──────────────────────────────────────────────
+  // Contains everything removed from the main overlay to maximise map space:
+  //   • Swath width segmented picker
+  //   • Undo last 30 seconds
+  //   • Mark Spot shortcut
+  //   • Product status detail
+  //   • Detailed stat chips (coverage, distance, accuracy, lat/lng)
+
+  void _showMoreSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        // Wrap in StatefulBuilder so swath/spot changes update inside the sheet.
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            final summary = _sessionSummary ?? _buildSessionSummary();
+            final remainingPercent = _remainingProductPercent();
+            final sizeLabel = _reachModeEnabled ? 'Reach Depth' : 'Swath Width';
+
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Drag handle
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Swath width picker
+                  Text('$sizeLabel: ${AppFormat.feet(_swathWidthFeet)}',
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)),
+                  const SizedBox(height: 6),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SegmentedButton<String>(
+                      showSelectedIcon: false,
+                      multiSelectionEnabled: false,
+                      selected: <String>{_swathSegmentSelection},
+                      segments: [
+                        ..._presetSwathFeet.map(
+                          (feet) => ButtonSegment<String>(
+                            value: feet.toStringAsFixed(1),
+                            label: Text('${feet.toStringAsFixed(1)} ft'),
+                          ),
+                        ),
+                        const ButtonSegment<String>(value: 'custom', label: Text('Custom')),
+                      ],
+                      onSelectionChanged: _isSessionEnded
+                          ? null
+                          : (selected) async {
+                              final value = selected.first;
+                              if (value == 'custom') {
+                                await _openCustomSwathPicker();
+                                setSheetState(() {});
+                                setState(() {});
+                                return;
+                              }
+                              final parsed = double.tryParse(value);
+                              if (parsed == null) return;
+                              _setSwathWidthFeet(parsed);
+                              setSheetState(() {});
+                            },
+                    ),
+                  ),
+                  if (_isCustomSwathSelection)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Custom: ${_swathWidthFeet.toStringAsFixed(1)} ft',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    ),
+                  const SizedBox(height: 14),
+                  // Quick-action buttons row
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _isSessionEnded
+                              ? null
+                              : () {
+                                  _undoLast30Seconds();
+                                  Navigator.pop(ctx);
+                                },
+                          icon: const Icon(Icons.undo_outlined, size: 18),
+                          label: const Text('Undo 30s'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white38),
+                            minimumSize: const Size(0, 44),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: (_isSessionEnded || !_spotTreatmentMode)
+                              ? null
+                              : () {
+                                  _markSpot();
+                                  Navigator.pop(ctx);
+                                },
+                          icon: const Icon(Icons.add_location_alt_outlined, size: 18),
+                          label: const Text('Mark Spot'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white38),
+                            minimumSize: const Size(0, 44),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  // Product status (full detail)
+                  if (summary.tankCapacityGallons != null &&
+                      summary.estimatedProductUsed != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(
+                        '${summary.estimatedProductUsed!.toStringAsFixed(1)} used · '
+                        '${(summary.remainingProduct ?? 0).clamp(0.0, summary.tankCapacityGallons ?? 0).toStringAsFixed(1)} gal left'
+                        '${remainingPercent != null ? ' (${remainingPercent.toStringAsFixed(0)}%)' : ''}',
+                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
+                    ),
+                  // Detailed stat chips
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _statChip(label: 'Coverage', value: AppFormat.percent(_liveCoveragePercent())),
+                      _statChip(label: 'Distance', value: AppFormat.miles(_distanceMiles())),
+                      _statChip(label: 'Accuracy', value: AppFormat.meters(_accuracy)),
+                      _statChip(label: 'Lat/Lng', value: AppFormat.latLng(_latitude, _longitude)),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
 
   Widget _buildViewModeToggle() {
     return Container(
@@ -3403,13 +3344,13 @@ Future<void> _stopTracking() async {
         segments: const [
           ButtonSegment<TrackingViewMode>(
             value: TrackingViewMode.map,
-            icon: Icon(Icons.map_outlined),
-            label: Text('Map Completion View'),
+            icon: Icon(Icons.map_outlined, size: 18),
+            label: Text('Map'),
           ),
           ButtonSegment<TrackingViewMode>(
             value: TrackingViewMode.guidance,
-            icon: Icon(Icons.navigation_outlined),
-            label: Text('Line Guidance View'),
+            icon: Icon(Icons.navigation_outlined, size: 18),
+            label: Text('Guidance'),
           ),
         ],
         selected: {_viewMode},
@@ -3442,7 +3383,7 @@ Future<void> _stopTracking() async {
       width: 235,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.56),
+        color: Colors.black.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
       ),
@@ -3497,9 +3438,9 @@ Future<void> _stopTracking() async {
       width: 280,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.62),
+        color: Colors.black.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.26)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3540,7 +3481,7 @@ Future<void> _stopTracking() async {
       width: 185,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.56),
+        color: Colors.black.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
       ),
@@ -3574,8 +3515,11 @@ Future<void> _stopTracking() async {
                     subdomains: _property?.hasOrthomosaic() == true
                         ? const ['a', 'b', 'c']
                         : const [],
+                    userAgentPackageName: MapTileDefaults.userAgent,
+                    errorImage: MapTileDefaults.offlineTileImage,
+                    evictErrorTileStrategy:
+                        EvictErrorTileStrategy.notVisibleRespectMargin,
                   ),
-                  if (_outerBoundaryDashed.isNotEmpty)
                     PolylineLayer(polylines: _outerBoundaryDashed),
                   if (_specialZones.isNotEmpty)
                     PolygonLayer(
@@ -3758,6 +3702,479 @@ Future<void> _stopTracking() async {
     return null;
   }
 
+  // ── Guidance Grid ─────────────────────────────────────────────────────────
+
+  List<Polyline> _buildGuidanceGridLines() {
+    final boundary = _outerBoundaryRing.length >= 3
+        ? _outerBoundaryRing
+        : _propertyBoundary;
+    if (boundary.length < 3) return const [];
+
+    final swathMeters = _swathWidthFeet * 0.3048;
+    if (swathMeters < 0.3) return const [];
+
+    // Find bounding box of the boundary.
+    var minLat = boundary.first.latitude;
+    var maxLat = boundary.first.latitude;
+    var minLng = boundary.first.longitude;
+    var maxLng = boundary.first.longitude;
+    for (final p in boundary) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+
+    final midLat = (minLat + maxLat) / 2;
+    const metersPerDegLat = 111320.0;
+    final metersPerDegLng = metersPerDegLat * math.cos(midLat * math.pi / 180);
+    final spacingDegLng = swathMeters / math.max(1.0, metersPerDegLng);
+    final spacingDegLat = swathMeters / metersPerDegLat;
+
+    const gridColor = Color(0x66FFFF00); // 40% yellow — visible outdoors
+
+    final lines = <Polyline>[];
+
+    // Vertical (N–S) lines
+    var lng = minLng + spacingDegLng;
+    while (lng < maxLng) {
+      final clipped = _clipVerticalLineToBoundary(lng, minLat, maxLat, boundary);
+      for (final segment in clipped) {
+        lines.add(Polyline(
+          points: segment,
+          strokeWidth: 1.4,
+          color: gridColor,
+        ));
+      }
+      lng += spacingDegLng;
+    }
+
+    // Horizontal (E–W) lines
+    var lat = minLat + spacingDegLat;
+    while (lat < maxLat) {
+      final clipped =
+          _clipHorizontalLineToBoundary(lat, minLng, maxLng, boundary);
+      for (final segment in clipped) {
+        lines.add(Polyline(
+          points: segment,
+          strokeWidth: 1.4,
+          color: gridColor,
+        ));
+      }
+      lat += spacingDegLat;
+    }
+
+    return lines;
+  }
+
+  List<List<LatLng>> _clipVerticalLineToBoundary(
+    double lng,
+    double minLat,
+    double maxLat,
+    List<LatLng> boundary,
+  ) {
+    // Find intersections of vertical line x=lng with boundary edges.
+    final intersections = <double>[];
+    final closed = List<LatLng>.from(boundary);
+    if (!_samePoint(closed.first, closed.last)) closed.add(closed.first);
+
+    for (var i = 0; i < closed.length - 1; i++) {
+      final a = closed[i];
+      final b = closed[i + 1];
+      final aLng = a.longitude;
+      final bLng = b.longitude;
+      if ((aLng <= lng && bLng >= lng) || (bLng <= lng && aLng >= lng)) {
+        final range = bLng - aLng;
+        if (range.abs() < 1e-12) continue;
+        final t = (lng - aLng) / range;
+        if (t >= 0 && t <= 1) {
+          intersections.add(a.latitude + t * (b.latitude - a.latitude));
+        }
+      }
+    }
+    if (intersections.length < 2) return const [];
+    intersections.sort();
+
+    final segments = <List<LatLng>>[];
+    for (var i = 0; i < intersections.length - 1; i += 2) {
+      segments.add([
+        LatLng(intersections[i], lng),
+        LatLng(intersections[i + 1], lng),
+      ]);
+    }
+    return segments;
+  }
+
+  List<List<LatLng>> _clipHorizontalLineToBoundary(
+    double lat,
+    double minLng,
+    double maxLng,
+    List<LatLng> boundary,
+  ) {
+    final intersections = <double>[];
+    final closed = List<LatLng>.from(boundary);
+    if (!_samePoint(closed.first, closed.last)) closed.add(closed.first);
+
+    for (var i = 0; i < closed.length - 1; i++) {
+      final a = closed[i];
+      final b = closed[i + 1];
+      final aLat = a.latitude;
+      final bLat = b.latitude;
+      if ((aLat <= lat && bLat >= lat) || (bLat <= lat && aLat >= lat)) {
+        final range = bLat - aLat;
+        if (range.abs() < 1e-12) continue;
+        final t = (lat - aLat) / range;
+        if (t >= 0 && t <= 1) {
+          intersections.add(a.longitude + t * (b.longitude - a.longitude));
+        }
+      }
+    }
+    if (intersections.length < 2) return const [];
+    intersections.sort();
+
+    final segments = <List<LatLng>>[];
+    for (var i = 0; i < intersections.length - 1; i += 2) {
+      segments.add([
+        LatLng(lat, intersections[i]),
+        LatLng(lat, intersections[i + 1]),
+      ]);
+    }
+    return segments;
+  }
+
+  // ── Advanced Drawer ───────────────────────────────────────────────────────
+
+  Widget _buildAdvancedDrawer(BuildContext context) {
+    return Drawer(
+      backgroundColor: Colors.black.withOpacity(0.96),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.horizontal(left: Radius.circular(20)),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Text(
+                    'Advanced Controls',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                if (_sprayableZones().isNotEmpty) ...[
+                  DropdownButtonFormField<String>(
+                    value: _activeZoneSelection,
+                    dropdownColor: Colors.black.withValues(alpha: 0.92),
+                    style: const TextStyle(color: Colors.white),
+                    iconEnabledColor: Colors.white,
+                    decoration: InputDecoration(
+                      labelText: 'Active Spray Zone',
+                      labelStyle: const TextStyle(color: Colors.white70),
+                      enabledBorder: OutlineInputBorder(
+                        borderSide: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      focusedBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white),
+                      ),
+                    ),
+                    items: [
+                      const DropdownMenuItem<String>(
+                        value: _allSprayableSelectionId,
+                        child: Text('All Sprayable Zones'),
+                      ),
+                      ..._sprayableZones().map(
+                        (zone) => DropdownMenuItem<String>(
+                          value: zone.id,
+                          child: Text('Spraying ${zone.name}'),
+                        ),
+                      ),
+                    ],
+                    onChanged: _isSessionEnded
+                        ? null
+                        : (value) {
+                            if (value == null) return;
+                            setState(() => _activeZoneSelection = value);
+                          },
+                  ),
+                  const SizedBox(height: 18),
+                ],
+                _drawerSwitch(
+                  title: 'Reach Mode',
+                  trailing: _helpIcon('Reach Mode',
+                      'Sprays off to one side instead of full circle. '
+                      'Use when walking parallel to the spray line (e.g. boom sprayer). '
+                      'Heading adjusts with compass or manual trim.'),
+                  subtitle: _reachModeEnabled
+                      ? 'Facing ${_headingDirectionLabel(_effectiveReachHeadingDegrees())}'
+                      : 'Off — normal full circle coverage',
+                  value: _reachModeEnabled,
+                  onChanged: _isSessionEnded
+                      ? null
+                      : (v) => setState(() => _reachModeEnabled = v),
+                ),
+                if (_reachModeEnabled)
+                  Row(
+                    children: [
+                      IconButton(
+                        onPressed: () => _nudgeReachHeading(-15),
+                        icon: const Icon(Icons.rotate_left),
+                        color: Colors.white,
+                      ),
+                      Expanded(
+                        child: Text(
+                          _isCompassAvailable
+                              ? 'Compass + trim: ${_headingDirectionLabel(_effectiveReachHeadingDegrees())}'
+                              : 'Manual: ${_headingDirectionLabel(_effectiveReachHeadingDegrees())}',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => _nudgeReachHeading(15),
+                        icon: const Icon(Icons.rotate_right),
+                        color: Colors.white,
+                      ),
+                    ],
+                  ),
+                const Divider(color: Colors.white24, height: 24),
+                _drawerSwitch(
+                  title: 'Overlap Heatmap',
+                  trailing: _helpIcon('Overlap Heatmap',
+                      'Highlights areas you\'ve crossed more than once in red/yellow. '
+                      'Helps you see where you\'re wasting product with excessive overlap.'),
+                  subtitle: 'Highlights multi-pass zones in red',
+                  value: _showOverlapHeatmap,
+                  onChanged: _isSessionEnded
+                      ? null
+                      : (v) => setState(() => _showOverlapHeatmap = v),
+                ),
+                _drawerSwitch(
+                  title: 'Guidance Grid',
+                  trailing: _helpIcon('Guidance Grid',
+                      'Shows parallel lines spaced at your swath width so you can '
+                      'mow/spray in straight, evenly-spaced passes.'),
+                  subtitle: 'Show parallel lines at swath spacing',
+                  value: _showGuidanceGrid,
+                  onChanged: (v) => setState(() => _showGuidanceGrid = v),
+                ),
+                const Divider(color: Colors.white24, height: 24),
+                // Blackout Mode toggle — turns the display almost entirely black
+                // to save battery (especially on OLED) and reduce glare in the
+                // field. Tracking & GPS continue running in the foreground.
+                // NOTE: On PWAs this is cosmetic — the browser still controls
+                // the backlight, but minimising rendered pixels still helps.
+                _drawerSwitch(
+                  title: 'Blackout Mode',
+                  trailing: _helpIcon('Blackout Mode',
+                      'Blacks out the screen to save battery (especially on OLED). '
+                      'GPS tracking continues. Tap "Show Map" to restore. '
+                      'On PWAs the OS still controls backlight, but it reduces glare.'),
+                  subtitle: _blackoutMode
+                      ? 'Screen dimmed — tap Restore to exit'
+                      : 'Dim screen to save battery in the field',
+                  value: _blackoutMode,
+                  onChanged: _isSessionEnded
+                      ? null
+                      : (v) {
+                          setState(() => _blackoutMode = v);
+                          // Close the drawer so the blackout overlay is visible.
+                          if (v) Navigator.of(context).pop();
+                        },
+                ),
+                // Screen-on / screen-off toggle. When disabled, the GPS stream
+                // continues recording coverage points even with the display off,
+                // for accountability and battery savings on long jobs.
+                _drawerSwitch(
+                  title: 'Screen Always On',
+                  trailing: _helpIcon('Keep Screen Always On',
+                      'Prevents the screen from sleeping during tracking using wakelock. '
+                      'Turn off to save battery — GPS still records in the background.'),
+                  subtitle: _keepScreenOn
+                      ? 'Display stays on while tracking'
+                      : 'Screen may turn off — GPS keeps recording',
+                  value: _keepScreenOn,
+                  onChanged: _isSessionEnded
+                      ? null
+                      : (v) {
+                          setState(() => _keepScreenOn = v);
+                          if (v && _isTracking) {
+                            WakelockPlus.enable();
+                          } else if (!v) {
+                            WakelockPlus.disable();
+                          }
+                        },
+                ),
+                const Divider(color: Colors.white24, height: 24),
+                _drawerSwitch(
+                  title: 'Spot Treatment',
+                  trailing: _helpIcon('Spot Treatment Mode',
+                      'Tap to mark individual problem spots (ant hills, weed patches, etc.) '
+                      'on the map. Adjust the radius to match the treatment area.'),
+                  subtitle: _spotTreatmentMode
+                      ? '${_spotTreatments.length} spot${_spotTreatments.length != 1 ? 's' : ''} marked'
+                      : 'Mark individual treatment spots',
+                  value: _spotTreatmentMode,
+                  onChanged: _isSessionEnded
+                      ? null
+                      : (v) => setState(() => _spotTreatmentMode = v),
+                ),
+                if (_spotTreatmentMode) ...[
+                  const SizedBox(height: 6),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _isSessionEnded ? null : _markSpot,
+                      icon: const Icon(Icons.add_location_alt_outlined),
+                      label: Text(
+                        'Mark Spot  ·  ${_spotRadiusFeet.toStringAsFixed(0)} ft',
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6A1B9A),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.fromHeight(48),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Text('1 ft',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall
+                              ?.copyWith(color: Colors.white70)),
+                      Expanded(
+                        child: Slider(
+                          value: _spotRadiusFeet,
+                          min: 1.0,
+                          max: 10.0,
+                          divisions: 9,
+                          label: '${_spotRadiusFeet.toStringAsFixed(0)} ft',
+                          activeColor: const Color(0xFF6A1B9A),
+                          onChanged: _isSessionEnded
+                              ? null
+                              : (v) => setState(() => _spotRadiusFeet = v),
+                        ),
+                      ),
+                      Text('10 ft',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall
+                              ?.copyWith(color: Colors.white70)),
+                    ],
+                  ),
+                ],
+                const Divider(color: Colors.white24, height: 24),
+                _drawerSwitch(
+                  title: 'High-Precision GPS',
+                  trailing: _helpIcon('High-Precision GPS',
+                      'Uses raw GNSS measurements or high-frequency sampling for better accuracy. '
+                      'Drains battery faster. Only available on supported Android devices.'),
+                  subtitle: _isCheckingGnssSupport
+                      ? 'Checking...'
+                      : _isRawGnssSupported
+                          ? 'Raw GNSS available'
+                          : _canUseHighPrecisionMode
+                              ? 'High-frequency GPS'
+                              : 'Unsupported',
+                  value: _highAccuracyGnssEnabled,
+                  onChanged: (!_canUseHighPrecisionMode || _isSessionEnded)
+                      ? null
+                      : (v) => _setHighAccuracyGnssEnabled(v),
+                ),
+                const SizedBox(height: 24),
+                // Stats
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _statChip(label: 'Lat/Lng', value: AppFormat.latLng(_latitude, _longitude)),
+                    _statChip(label: 'Accuracy', value: AppFormat.meters(_accuracy)),
+                    _statChip(label: 'Distance', value: AppFormat.miles(_distanceMiles())),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Help icon for advanced drawer toggles ──────────────────────────────
+  // Tapping the "?" shows a short explanation dialog so the operator
+  // understands what each toggle does without leaving the drawer.
+
+  Widget _helpIcon(String title, String explanation) {
+    return GestureDetector(
+      onTap: () {
+        showDialog<void>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: Text(title),
+            content: Text(explanation),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Got it'),
+              ),
+            ],
+          ),
+        );
+      },
+      child: const Padding(
+        padding: EdgeInsets.only(left: 4),
+        child: Icon(Icons.help_outline, color: Colors.white38, size: 16),
+      ),
+    );
+  }
+
+  Widget _drawerSwitch({
+    required String title,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool>? onChanged,
+    Widget? trailing,
+  }) {
+    return SwitchListTile.adaptive(
+      dense: true,
+      contentPadding: EdgeInsets.zero,
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              title,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+          ),
+          if (trailing != null) trailing,
+        ],
+      ),
+      subtitle: Text(
+        subtitle,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Colors.white70,
+            ),
+      ),
+      value: value,
+      onChanged: onChanged,
+    );
+  }
+
   @override
   void dispose() {
     // Always release wakelock on dispose — covers cases where the widget is
@@ -3781,9 +4198,19 @@ Future<void> _stopTracking() async {
 
     return Scaffold(
       extendBodyBehindAppBar: true,
+      endDrawer: _buildAdvancedDrawer(context),
       appBar: AppBar(
         backgroundColor: Colors.black.withValues(alpha: 0.26),
         title: Text(widget.propertyName),
+        actions: [
+          Builder(
+            builder: (ctx) => IconButton(
+              icon: const Icon(Icons.tune, color: Colors.white),
+              tooltip: 'Advanced Controls',
+              onPressed: () => Scaffold.of(ctx).openEndDrawer(),
+            ),
+          ),
+        ],
       ),
       body: _isLoadingMap
           ? const Center(child: CircularProgressIndicator())
@@ -3811,6 +4238,10 @@ Future<void> _stopTracking() async {
                           subdomains: _property?.hasOrthomosaic() == true
                               ? const ['a', 'b', 'c']
                               : const [],
+                          userAgentPackageName: MapTileDefaults.userAgent,
+                          errorImage: MapTileDefaults.offlineTileImage,
+                          evictErrorTileStrategy:
+                              EvictErrorTileStrategy.notVisibleRespectMargin,
                         ),
                         if (_property?.hasOrthomosaic() == true &&
                             _mapBounds != null)
@@ -3854,6 +4285,10 @@ Future<void> _stopTracking() async {
                           ),
                         if (_exclusionPolygons.isNotEmpty)
                           PolygonLayer(polygons: _exclusionPolygons),
+                        if (_showGuidanceGrid)
+                          PolylineLayer(
+                            polylines: _buildGuidanceGridLines(),
+                          ),
                         if (_viewMode == TrackingViewMode.guidance &&
                             _recommendedPath.length >= 2)
                           PolylineLayer(
@@ -3874,9 +4309,10 @@ Future<void> _stopTracking() async {
                           PolylineLayer(
                             polylines: [
                               Polyline(
-                                points: _paths
-                                    .map((p) => LatLng(p.latitude, p.longitude))
-                                    .toList(),
+                                // Render the Douglas-Peucker smoothed path so
+                                // circles and curves look clean; full _paths is
+                                // still used for accurate coverage % calculation.
+                                points: _smoothedRenderPath(),
                                 strokeWidth: 4,
                                 color: Colors.green,
                               ),
@@ -4096,7 +4532,8 @@ Future<void> _stopTracking() async {
                   ),
                 Positioned(
                   left: 14,
-                  bottom: MediaQuery.of(context).padding.bottom + 190,
+                  // Compact overlay is ~120 px tall; keep cancel button above it.
+                  bottom: MediaQuery.of(context).padding.bottom + 140,
                   child: Opacity(
                     opacity: 0.86,
                     child: _buildCancelJobButton(),
@@ -4121,7 +4558,9 @@ Future<void> _stopTracking() async {
                     onPressed: () {
                       setState(() => _orientationLocked = !_orientationLocked);
                     },
-                    backgroundColor: Colors.black.withValues(alpha: 0.55),
+                    backgroundColor: _orientationLocked
+                        ? const Color(0xCC1565C0)
+                        : Colors.black.withValues(alpha: 0.55),
                     foregroundColor: Colors.white,
                     child: Icon(
                       _orientationLocked
@@ -4147,6 +4586,83 @@ Future<void> _stopTracking() async {
                   alignment: Alignment.bottomCenter,
                   child: _buildBottomOverlay(),
                 ),
+                // ── Blackout Mode overlay ──────────────────────────────────
+                // Covers the entire screen with near-black when active.
+                // GPS tracking, timers, and point collection continue normally
+                // because only the visual layer is hidden — no state changes.
+                // On PWAs the OS still drives the display backlight, but
+                // blacking out rendered pixels reduces OLED power draw and
+                // eliminates glare. Combine with "Keep Screen Always On" so
+                // the wakelock holds the screen active while Blackout dims it.
+                if (_blackoutMode)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      // Absorb all taps so the map & controls behind can't be
+                      // accidentally activated through gloves or pocket presses.
+                      onTap: () {},
+                      child: Container(
+                        color: const Color(0xFA000000), // 98 % opaque black
+                        child: SafeArea(
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // Pulsing status indicator so the user knows
+                                // tracking is still alive.
+                                Icon(
+                                  _isTracking
+                                      ? Icons.gps_fixed
+                                      : Icons.pause_circle_outline,
+                                  color: _isTracking
+                                      ? const Color(0xFF00E676)
+                                      : Colors.orange,
+                                  size: 36,
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  _isTracking
+                                      ? 'Tracking · ${_elapsedLabel()}'
+                                      : 'Paused',
+                                  style: const TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 32),
+                                // "Restore View" button — large enough for
+                                // gloved taps (72 × 72 hit area) but requires
+                                // a deliberate press so it won't fire from an
+                                // accidental pocket brush.
+                                SizedBox(
+                                  width: 180,
+                                  height: 56,
+                                  child: ElevatedButton.icon(
+                                    onPressed: () =>
+                                        setState(() => _blackoutMode = false),
+                                    icon: const Icon(Icons.visibility),
+                                    label: const Text('Show Map'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFFFF8F00),
+                                      foregroundColor: Colors.white,
+                                      textStyle: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(28),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
     );

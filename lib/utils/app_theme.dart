@@ -8,6 +8,30 @@ class AppTheme {
   static const Color lightBackground = Color(0xFFF5F5F5);
   static const Color darkBackground = Color(0xFF121212);
 
+  /// Branded page background gradients (landing, about, etc.)
+  static const List<Color> pageBgDark = [
+    Color(0xFF0F1511),
+    Color(0xFF111B18),
+    Color(0xFF121A21),
+  ];
+  static const List<Color> pageBgLight = [
+    Color(0xFFF5F9F5),
+    Color(0xFFEAF5FF),
+    Color(0xFFF5F5F5),
+  ];
+
+  /// Hero card gradient (dark for both modes, white text on top)
+  static const List<Color> heroGradientDark = [
+    Color(0xFF153420),
+    Color(0xFF1A4A31),
+    Color(0xFF183B5C),
+  ];
+  static const List<Color> heroGradientLight = [
+    Color(0xFF173A22),
+    Color(0xFF1F5B39),
+    Color(0xFF1B4F7F),
+  ];
+
   static const double radiusSmall = 12;
   static const double radiusLarge = 16;
   static const double spaceMd = 16;
@@ -44,14 +68,40 @@ class AppTheme {
         style: ElevatedButton.styleFrom(
           backgroundColor: primaryColor,
           foregroundColor: Colors.white,
+          minimumSize: const Size(0, 56),
           textStyle: baseTextTheme.labelLarge?.copyWith(
             fontWeight: FontWeight.w600,
+            fontSize: 16,
           ),
           padding: const EdgeInsets.symmetric(horizontal: spaceLg, vertical: 14),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(radiusSmall),
+            borderRadius: BorderRadius.circular(radiusLarge),
           ),
           elevation: 0,
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(0, 56),
+          textStyle: baseTextTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w600,
+            fontSize: 16,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: spaceLg, vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(radiusLarge),
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          textStyle: baseTextTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: spaceMd, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(radiusSmall),
+          ),
         ),
       ),
       cardTheme: CardThemeData(
@@ -139,14 +189,40 @@ class AppTheme {
         style: ElevatedButton.styleFrom(
           backgroundColor: primaryColor,
           foregroundColor: Colors.white,
+          minimumSize: const Size(0, 56),
           textStyle: baseTextTheme.labelLarge?.copyWith(
             fontWeight: FontWeight.w600,
+            fontSize: 16,
           ),
           padding: const EdgeInsets.symmetric(horizontal: spaceLg, vertical: 14),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(radiusSmall),
+            borderRadius: BorderRadius.circular(radiusLarge),
           ),
           elevation: 0,
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(0, 56),
+          textStyle: baseTextTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w600,
+            fontSize: 16,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: spaceLg, vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(radiusLarge),
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          textStyle: baseTextTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: spaceMd, vertical: 12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(radiusSmall),
+          ),
         ),
       ),
       cardTheme: CardThemeData(

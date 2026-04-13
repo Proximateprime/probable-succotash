@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../widgets/landing_widgets.dart';
+import '../utils/app_theme.dart';
 import 'about_page.dart';
 import 'home_dashboard.dart';
 import 'login_screen.dart';
@@ -33,16 +34,8 @@ class LandingPage extends StatelessWidget {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: isDark
-                ? const [
-                    Color(0xFF0F1511),
-                    Color(0xFF111B18),
-                    Color(0xFF121A21),
-                  ]
-                : const [
-                    Color(0xFFF5F9F5),
-                    Color(0xFFE9F4FF),
-                    Color(0xFFF5F5F5),
-                  ],
+                ? AppTheme.pageBgDark
+                : AppTheme.pageBgLight,
           ),
         ),
         child: Stack(
@@ -54,7 +47,7 @@ class LandingPage extends StatelessWidget {
                 width: 220,
                 height: 220,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF4CAF50).withValues(
+                  color: AppTheme.primaryColor.withValues(
                     alpha: isDark ? 0.14 : 0.10,
                   ),
                   shape: BoxShape.circle,
@@ -68,7 +61,7 @@ class LandingPage extends StatelessWidget {
                 width: 240,
                 height: 240,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF2196F3).withValues(
+                  color: AppTheme.accentBlue.withValues(
                     alpha: isDark ? 0.12 : 0.08,
                   ),
                   shape: BoxShape.circle,
@@ -216,18 +209,37 @@ class LandingPage extends StatelessWidget {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                Center(
+                // Stylised GPS-path illustration
+                Positioned.fill(
+                  child: CustomPaint(painter: _CoveragePathPainter()),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(20),
                   child: Column(
-                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(Icons.satellite_alt_outlined,
-                          size: 52, color: Colors.white),
-                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          const Icon(Icons.gps_fixed,
+                              size: 18, color: Colors.white),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Live GPS Coverage Tracking',
+                            style: GoogleFonts.roboto(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
                       Text(
-                        'Drone map placeholder – your yard view',
+                        'See exactly where you sprayed — in real time',
                         style: GoogleFonts.roboto(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
+                          color: Colors.white70,
+                          fontSize: 12,
                         ),
                       ),
                     ],
@@ -598,4 +610,68 @@ class LandingPage extends StatelessWidget {
       ],
     ).animate().fadeIn(delay: 500.ms, duration: 420.ms);
   }
+}
+
+class _CoveragePathPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Yard boundary
+    final boundaryPaint = Paint()
+      ..color = const Color(0x554CAF50)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+
+    final bx = size.width * 0.12;
+    final by = size.height * 0.15;
+    final bw = size.width * 0.76;
+    final bh = size.height * 0.65;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Rect.fromLTWH(bx, by, bw, bh), const Radius.circular(8)),
+      boundaryPaint,
+    );
+
+    // Mow-pattern lines
+    const rows = 8;
+    final left = bx + 10;
+    final right = bx + bw - 10;
+    final topY = by + 12;
+    final rowHeight = (bh - 24) / rows;
+
+    final pathPaint = Paint()
+      ..color = const Color(0x664CAF50)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+
+    final filledPaint = Paint()
+      ..color = const Color(0x334CAF50)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8
+      ..strokeCap = StrokeCap.round;
+
+    for (var i = 0; i < rows; i++) {
+      final y = topY + i * rowHeight + rowHeight / 2;
+      final isEven = i % 2 == 0;
+      final start = Offset(isEven ? left : right, y);
+      final end = Offset(isEven ? right : left, y);
+      canvas.drawLine(start, end, i < rows - 2 ? filledPaint : pathPaint);
+    }
+
+    // GPS dot (animated look)
+    final dotX = right - 14;
+    final dotY = topY + (rows - 1) * rowHeight + rowHeight / 2;
+    canvas.drawCircle(
+      Offset(dotX, dotY),
+      5,
+      Paint()..color = Colors.white,
+    );
+    canvas.drawCircle(
+      Offset(dotX, dotY),
+      3,
+      Paint()..color = const Color(0xFF4CAF50),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

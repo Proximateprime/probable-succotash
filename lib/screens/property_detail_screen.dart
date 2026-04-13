@@ -13,6 +13,7 @@ import '../models/user_model.dart';
 import '../models/exclusion_zone_model.dart';
 import '../services/recommended_path_service.dart';
 import '../services/supabase_service.dart';
+import '../utils/map_tile_defaults.dart';
 import '../widgets/app_ui.dart';
 import 'tracking_screen.dart';
 import 'webodm_screen.dart';
@@ -110,7 +111,9 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
       setState(() {
         _outdoorModeEnabled = prefs.getBool('tracking_outdoor_mode') ?? false;
       });
-    } catch (_) {}
+    } catch (_) {
+      // Non-critical: defaults are fine if prefs fail to load.
+    }
   }
 
   Future<void> _loadData() async {
@@ -455,10 +458,11 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: FilledButton.icon(
+                child: AppPrimaryButton(
+                  label: 'Calculate Usage',
+                  icon: Icons.calculate_outlined,
                   onPressed: _calculateTreatmentUsage,
-                  icon: const Icon(Icons.calculate_outlined),
-                  label: const Text('Calculate Usage'),
+                  isDense: false,
                 ),
               ),
             ],
@@ -536,17 +540,12 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
-            child: FilledButton.icon(
+            child: AppPrimaryButton(
+              label: _isSavingTreatment ? 'Saving...' : 'Save Treatment Schedule',
+              icon: Icons.save_outlined,
               onPressed: _isSavingTreatment ? null : _saveTreatmentSchedule,
-              icon: _isSavingTreatment
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.save_outlined),
-              label: Text(
-                  _isSavingTreatment ? 'Saving...' : 'Save Treatment Schedule'),
+              isLoading: _isSavingTreatment,
+              isDense: false,
             ),
           ),
         ],
@@ -983,6 +982,55 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
     }
   }
 
+  Future<void> _confirmDeleteProperty() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Property'),
+        content: Text(
+          'Permanently delete "${_property.name}"? '
+          'All associated tracking sessions will remain in the database '
+          'but will no longer be linked to a property. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await SupabaseService().deleteProperty(_property.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Property deleted'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete property: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _showEditPropertyDialog() async {
     final nameController = TextEditingController(text: _property.name);
     final addressController =
@@ -1160,6 +1208,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                             await _saveAssignments(selectedWorkerIds);
                             if (mounted) Navigator.pop(context);
                           },
+                    isDense: false,
                   ),
                 ],
               ),
@@ -1257,6 +1306,8 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
           exclusionZones: _property.exclusionZones,
           specialZones: _property.specialZones,
           outerBoundary: geoJsonBoundary,
+          boundaryMode: _property.boundaryMode,
+          outerBoundaryBufferFeet: _property.outerBoundaryBufferFeet,
           recommendedPath: _property.recommendedPath,
           treatmentType: _property.treatmentType,
           lastApplication: _property.lastApplication,
@@ -2001,6 +2052,10 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                   children: [
                     TileLayer(
                       urlTemplate: _satelliteUrlTemplate,
+                      userAgentPackageName: MapTileDefaults.userAgent,
+                      errorImage: MapTileDefaults.offlineTileImage,
+                      evictErrorTileStrategy:
+                          EvictErrorTileStrategy.notVisibleRespectMargin,
                     ),
                   ],
                 ),
@@ -2045,23 +2100,17 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                           label: const Text('Quick Setup - Walk Boundaries'),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: _currentUser == null || (!_property.hasMapData() && !(_mapLimit?.allowed ?? true))
-                              ? null
-                              : _openWebODMBuilder,
-                          icon: const Icon(Icons.add_chart_outlined),
-                          label: const Text('Import Drone Map (Preferred)'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white,
-                            side: BorderSide(
-                              color: Colors.white.withValues(alpha: 0.55),
-                            ),
-                          ),
-                        ),
-                      ),
+                      // Full drone orthomosaic + live subtraction is a future upgrade
+                      // Drone/WebODM import hidden for MVP — keep basic satellite imagery.
+                      // const SizedBox(height: 8),
+                      // SizedBox(
+                      //   width: double.infinity,
+                      //   child: OutlinedButton.icon(
+                      //     onPressed: _openWebODMBuilder,
+                      //     icon: const Icon(Icons.add_chart_outlined),
+                      //     label: const Text('Import Drone Map'),
+                      //   ),
+                      // ),
                     ],
                   ),
                 ),
@@ -2086,6 +2135,10 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
           // Always show satellite tiles in preview — no drone map required.
           TileLayer(
             urlTemplate: _satelliteUrlTemplate,
+            userAgentPackageName: MapTileDefaults.userAgent,
+            errorImage: MapTileDefaults.offlineTileImage,
+            evictErrorTileStrategy:
+                EvictErrorTileStrategy.notVisibleRespectMargin,
           ),
           // Outer boundary in yellow (matches in-session color).
           if (_outerBoundaryDashed.isNotEmpty)
@@ -2142,14 +2195,16 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
   }
 
   Widget _buildActionButtons(bool isCompactLayout) {
+    // Full drone orthomosaic + live subtraction is a future upgrade
+    // Drone/WebODM import hidden for MVP — keep basic satellite imagery.
     final canImportNewMap = _property.hasMapData() || (_mapLimit?.allowed ?? true);
     final mapButton = OutlinedButton.icon(
       onPressed: _currentUser == null || !canImportNewMap ? null : _openWebODMBuilder,
       icon: const Icon(Icons.map_outlined),
       label: Text(
         _property.hasMapData()
-            ? 'Update Drone Map (Preferred)'
-            : 'Import Drone Map (Preferred)',
+            ? 'Update Map'
+            : 'Import Map',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
@@ -2227,6 +2282,24 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
             onPressed: _showEditPropertyDialog,
             icon: Icon(Icons.edit_outlined, size: _outdoorModeEnabled ? 34 : 24),
             tooltip: 'Edit property',
+          ),
+          PopupMenuButton<String>(
+            icon: Icon(Icons.more_vert, size: _outdoorModeEnabled ? 34 : 24),
+            onSelected: (value) {
+              if (value == 'delete') _confirmDeleteProperty();
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'delete',
+                child: Row(
+                  children: [
+                    Icon(Icons.delete_outline, color: Colors.red),
+                    SizedBox(width: 8),
+                    Text('Delete Property', style: TextStyle(color: Colors.red)),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),

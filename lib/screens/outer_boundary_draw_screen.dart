@@ -1,3 +1,4 @@
+// ignore_for_file: unused_element
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../models/property_model.dart';
+import '../utils/map_tile_defaults.dart';
 
 class OuterBoundaryDrawScreen extends StatefulWidget {
   const OuterBoundaryDrawScreen({
@@ -22,6 +24,8 @@ class OuterBoundaryDrawScreen extends StatefulWidget {
 }
 
 class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
+    bool _editMode = false;
+    int? _draggingIdx;
   late final MapController _mapController;
 
   final List<LatLng> _outerBoundaryPoints = [];
@@ -35,6 +39,7 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
   void initState() {
     super.initState();
     _mapController = MapController();
+    _bufferFeet = widget.property.outerBoundaryBufferFeet ?? 0.0;
     _initializeMapCenter();
     _loadExistingBoundary();
   }
@@ -71,6 +76,7 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
   }
 
   void _onMapTap(TapPosition tapPosition, LatLng point) {
+      if (_editMode) return; // Disable tap-to-add in edit mode
     setState(() {
       _appendSmoothedPoint(point);
     });
@@ -303,59 +309,106 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
       ),
       body: Stack(
         children: [
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: _mapCenter,
-              initialZoom: _mapZoom,
-              onTap: _onMapTap,
-            ),
-            children: [
-              TileLayer(
-                urlTemplate:
-                    'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+          Listener(
+            onPointerMove: (event) {
+              if (_editMode && _draggingIdx != null) {
+                final box = context.findRenderObject() as RenderBox?;
+                if (box != null) {
+                  final local = box.globalToLocal(event.position);
+                  final latLng = _mapController.camera.pointToLatLng(math.Point(local.dx, local.dy));
+                  setState(() {
+                    _outerBoundaryPoints[_draggingIdx!] = latLng;
+                  });
+                }
+              }
+            },
+            onPointerUp: (_) {
+              if (_editMode && _draggingIdx != null) {
+                setState(() {
+                  _draggingIdx = null;
+                });
+              }
+            },
+            child: FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _mapCenter,
+                initialZoom: _mapZoom,
+                onTap: _onMapTap,
               ),
-              if (closedBoundary.length >= 3)
-                PolygonLayer(
-                  polygons: [
-                    Polygon(
-                      points: closedBoundary,
-                      color: const Color(0xFF2E7D32).withValues(alpha: 0.16),
-                      borderColor: const Color(0xFF2E7D32),
-                      borderStrokeWidth: 2,
-                      isFilled: true,
-                    ),
-                  ],
+              children: [
+                TileLayer(
+                  urlTemplate:
+                      'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+                  userAgentPackageName: MapTileDefaults.userAgent,
+                  errorImage: MapTileDefaults.offlineTileImage,
+                  evictErrorTileStrategy:
+                      EvictErrorTileStrategy.notVisibleRespectMargin,
                 ),
-              if (closedBoundary.length >= 2)
-                PolylineLayer(
-                  polylines: _dashedLines(closedBoundary),
-                ),
-              if (_outerBoundaryPoints.isNotEmpty)
-                MarkerLayer(
-                  markers: _outerBoundaryPoints
-                      .asMap()
-                      .entries
-                      .map(
-                        (entry) => Marker(
-                          point: entry.value,
-                          width: 4,
-                          height: 4,
+                if (closedBoundary.length >= 3)
+                  PolygonLayer(
+                    polygons: [
+                      Polygon(
+                        points: closedBoundary,
+                        color: const Color(0xFF2E7D32).withValues(alpha: 0.16),
+                        borderColor: const Color(0xFF2E7D32),
+                        borderStrokeWidth: 2,
+                        isFilled: true,
+                      ),
+                    ],
+                  ),
+                // Dashed preview outline in edit mode
+                if (_editMode && closedBoundary.length >= 3)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: closedBoundary,
+                        strokeWidth: 3,
+                        color: Colors.blueAccent,
+                        isDotted: true,
+                      ),
+                    ],
+                  ),
+                if (_outerBoundaryPoints.isNotEmpty)
+                  MarkerLayer(
+                    markers: _outerBoundaryPoints.asMap().entries.map((entry) {
+                      final idx = entry.key;
+                      final pt = entry.value;
+                      return Marker(
+                        point: pt,
+                        width: _editMode ? 32 : 12,
+                        height: _editMode ? 32 : 12,
+                        child: GestureDetector(
+                          onPanStart: _editMode
+                              ? (_) {
+                                  setState(() {
+                                    _draggingIdx = idx;
+                                  });
+                                }
+                              : null,
+                          onPanEnd: _editMode
+                              ? (_) {
+                                  setState(() {
+                                    _draggingIdx = null;
+                                  });
+                                }
+                              : null,
                           child: Container(
                             decoration: BoxDecoration(
-                              color: Colors.white,
+                              color: _editMode ? Colors.amber : Colors.white,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: const Color(0xFF2E7D32),
-                                width: 1,
+                                color: _editMode ? Colors.amber : const Color(0xFF2E7D32),
+                                width: _editMode ? 3 : 1,
                               ),
                             ),
                           ),
                         ),
-                      )
-                      .toList(),
-                ),
-            ],
+                      );
+                    }).toList(),
+                  ),
+              ],
+            ),
           ),
           Positioned(
             left: 12,
@@ -371,10 +424,29 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      'Tap to draw the max spray area',
-                      style: TextStyle(fontSize: 12),
+                    Text(
+                      _editMode
+                          ? 'Drag points to adjust boundary'
+                          : 'Tap to draw the max spray area',
+                      style: const TextStyle(fontSize: 12),
                     ),
+                    const SizedBox(height: 8),
+                    if (_outerBoundaryPoints.length >= 3)
+                      ElevatedButton.icon(
+                        icon: Icon(_editMode ? Icons.check : Icons.edit),
+                        label: Text(_editMode ? 'Done Adjusting' : 'Adjust Boundary'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _editMode ? Colors.green : Colors.blue,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(120, 36),
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _editMode = !_editMode;
+                            _draggingIdx = null;
+                          });
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -510,6 +582,8 @@ class _BoxBoundaryDrawScreenState extends State<BoxBoundaryDrawScreen> {
   final List<LatLng> _corners = []; // 0, 1, or 2 points
   bool _isSaving = false;
   double _bufferFeet = 0.0;
+  bool _editMode = false;
+  int? _draggingCornerIdx;
 
   late LatLng _mapCenter;
   late double _mapZoom;
@@ -518,6 +592,7 @@ class _BoxBoundaryDrawScreenState extends State<BoxBoundaryDrawScreen> {
   void initState() {
     super.initState();
     _mapController = MapController();
+    _bufferFeet = widget.property.outerBoundaryBufferFeet ?? 0.0;
     _initializeMapCenter();
   }
 
@@ -547,6 +622,7 @@ class _BoxBoundaryDrawScreenState extends State<BoxBoundaryDrawScreen> {
   }
 
   void _onMapTap(TapPosition _, LatLng point) {
+    if (_editMode) return; // Disable tap-to-set in edit mode
     setState(() {
       if (_corners.length >= 2) _corners.clear();
       _corners.add(point);
@@ -665,74 +741,131 @@ class _BoxBoundaryDrawScreenState extends State<BoxBoundaryDrawScreen> {
   @override
   Widget build(BuildContext context) {
     final rect = _rectangleRing();
-    final String instruction = _corners.isEmpty
+    final String instruction = _editMode
+      ? 'Drag corners to adjust boundary'
+      : _corners.isEmpty
         ? 'Tap corner 1 (any diagonal corner)'
         : _corners.length == 1
-            ? 'Tap corner 2 (the opposite diagonal corner)'
-            : 'Rectangle ready — save or tap to reset';
+          ? 'Tap corner 2 (the opposite diagonal corner)'
+          : 'Rectangle ready — save or tap to reset';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Box / Property Boundary')),
       body: Stack(
         children: [
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: _mapCenter,
-              initialZoom: _mapZoom,
-              onTap: _onMapTap,
-            ),
-            children: [
-              TileLayer(
-                urlTemplate:
-                    'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+          Listener(
+            onPointerMove: (event) {
+              if (_editMode && _draggingCornerIdx != null) {
+                final box = context.findRenderObject() as RenderBox?;
+                if (box != null) {
+                  final local = box.globalToLocal(event.position);
+                  final latLng = _mapController.camera.pointToLatLng(math.Point(local.dx, local.dy));
+                  setState(() {
+                    _corners[_draggingCornerIdx!] = latLng;
+                  });
+                }
+              }
+            },
+            onPointerUp: (_) {
+              if (_editMode && _draggingCornerIdx != null) {
+                setState(() {
+                  _draggingCornerIdx = null;
+                });
+              }
+            },
+            child: FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _mapCenter,
+                initialZoom: _mapZoom,
+                onTap: _onMapTap,
               ),
-              if (rect.length >= 4)
-                PolygonLayer(
-                  polygons: [
-                    Polygon(
-                      points: rect,
-                      color: const Color(0xFF1565C0).withValues(alpha: 0.16),
-                      borderColor: const Color(0xFF1565C0),
-                      borderStrokeWidth: 2.5,
-                      isFilled: true,
-                    ),
-                  ],
+              children: [
+                TileLayer(
+                  urlTemplate:
+                      'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}',
+                  userAgentPackageName: MapTileDefaults.userAgent,
+                  errorImage: MapTileDefaults.offlineTileImage,
+                  evictErrorTileStrategy:
+                      EvictErrorTileStrategy.notVisibleRespectMargin,
                 ),
-              if (_corners.isNotEmpty)
-                MarkerLayer(
-                  markers: _corners.asMap().entries.map((entry) {
-                    final idx = entry.key;
-                    final pt = entry.value;
-                    return Marker(
-                      point: pt,
-                      width: 30,
-                      height: 30,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: idx == 0
-                              ? const Color(0xFF1565C0)
-                              : const Color(0xFF00796B),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2),
-                        ),
-                        child: Center(
-                          child: Text(
-                            '${idx + 1}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
+                if (rect.length >= 4)
+                  PolygonLayer(
+                    polygons: [
+                      Polygon(
+                        points: rect,
+                        color: const Color(0xFF1565C0).withValues(alpha: 0.16),
+                        borderColor: const Color(0xFF1565C0),
+                        borderStrokeWidth: 2.5,
+                        isFilled: true,
+                      ),
+                    ],
+                  ),
+                // Dashed preview outline in edit mode
+                if (_editMode && rect.length >= 4)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: rect,
+                        strokeWidth: 3,
+                        color: Colors.blueAccent,
+                        isDotted: true,
+                      ),
+                    ],
+                  ),
+                if (_corners.isNotEmpty)
+                  MarkerLayer(
+                    markers: _corners.asMap().entries.map((entry) {
+                      final idx = entry.key;
+                      final pt = entry.value;
+                      return Marker(
+                        point: pt,
+                        width: _editMode ? 52 : 30,
+                        height: _editMode ? 52 : 30,
+                        child: GestureDetector(
+                          onPanStart: _editMode
+                              ? (_) {
+                                  setState(() {
+                                    _draggingCornerIdx = idx;
+                                  });
+                                }
+                              : null,
+                          onPanEnd: _editMode
+                              ? (_) {
+                                  setState(() {
+                                    _draggingCornerIdx = null;
+                                  });
+                                }
+                              : null,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: idx == 0
+                                  ? const Color(0xFF1565C0)
+                                  : const Color(0xFF00796B),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                  color: _editMode ? Colors.amber : Colors.white,
+                                  width: _editMode ? 3 : 2),
+                            ),
+                            child: Center(
+                              child: Text(
+                                '${idx + 1}',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: _editMode ? 16 : 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    );
-                  }).toList(),
-                ),
-            ],
+                      );
+                    }).toList(),
+                  ),
+              ],
+            ),
           ),
-          // Info card
+          // Info card and Adjust button
           Positioned(
             left: 12,
             top: 12,
@@ -751,6 +884,23 @@ class _BoxBoundaryDrawScreenState extends State<BoxBoundaryDrawScreen> {
                       'Corners: ${_corners.length}/2',
                       style: const TextStyle(fontSize: 12),
                     ),
+                    const SizedBox(height: 8),
+                    if (_corners.length == 2)
+                      ElevatedButton.icon(
+                        icon: Icon(_editMode ? Icons.check : Icons.edit),
+                        label: Text(_editMode ? 'Done Adjusting' : 'Adjust Boundary'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _editMode ? Colors.green : Colors.blue,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size(120, 36),
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _editMode = !_editMode;
+                            _draggingCornerIdx = null;
+                          });
+                        },
+                      ),
                   ],
                 ),
               ),

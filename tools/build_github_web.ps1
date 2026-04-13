@@ -24,7 +24,7 @@ try {
     throw 'flutter pub get failed'
   }
 
-  flutter build web --release --base-href $BaseHref --no-wasm-dry-run
+  flutter build web --release --base-href $BaseHref --pwa-strategy offline-first
   if ($LASTEXITCODE -ne 0) {
     throw 'flutter build web failed'
   }

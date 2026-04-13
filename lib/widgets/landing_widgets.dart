@@ -236,7 +236,7 @@ class _LandingCtaButtonState extends State<LandingCtaButton> {
                     minimumSize: const Size.fromHeight(56),
                     elevation: _hovered ? 3 : 1,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                   ),
                   child: child,
@@ -248,7 +248,7 @@ class _LandingCtaButtonState extends State<LandingCtaButton> {
                     side: BorderSide(color: colorScheme.outline),
                     minimumSize: const Size.fromHeight(56),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(16),
                     ),
                     backgroundColor: _hovered
                         ? colorScheme.surface.withValues(alpha: 0.88)

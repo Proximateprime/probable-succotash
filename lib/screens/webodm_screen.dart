@@ -1,8 +1,9 @@
 import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -10,6 +11,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 import '../services/supabase_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/map_import_validator.dart';
+
+final _webodmLog = Logger();
 
 class WebODMScreen extends StatefulWidget {
   final String propertyId;
@@ -163,7 +166,7 @@ class _WebODMScreenState extends State<WebODMScreen> {
         } catch (e) {
           orthomosaicWarning =
               'Boundary imported, but orthomosaic image could not be stored.';
-          debugPrint('Orthomosaic upload error: $e');
+          _webodmLog.w('Orthomosaic upload error: $e');
         }
       }
 
@@ -188,7 +191,7 @@ class _WebODMScreenState extends State<WebODMScreen> {
       widget.onMapImported();
       Navigator.of(context).pop();
     } catch (e) {
-      debugPrint('Map import error: $e');
+      _webodmLog.e('Map import error: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

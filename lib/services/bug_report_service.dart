@@ -49,6 +49,7 @@ class BugReportService {
     required String description,
     required BugCategory category,
     String? userEmail,
+    String? platformInfo,
   }) async {
     final client = Supabase.instance.client;
     final userId = client.auth.currentUser?.id;
@@ -61,7 +62,7 @@ class BugReportService {
         'category': category.value,
         'title': title.trim(),
         'description': description.trim(),
-        'platform': 'web',
+        'platform': platformInfo ?? 'unknown',
       });
       _logger.i('Bug report submitted: $title');
     } catch (e) {

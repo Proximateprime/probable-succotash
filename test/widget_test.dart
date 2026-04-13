@@ -13,11 +13,11 @@ void main() {
     await tester.pumpWidget(
       const MaterialApp(
         home: Scaffold(
-          body: Text('CoverTrack Test Shell'),
+          body: Text('SprayMap Pro Test Shell'),
         ),
       ),
     );
 
-    expect(find.text('CoverTrack Test Shell'), findsOneWidget);
+    expect(find.text('SprayMap Pro Test Shell'), findsOneWidget);
   });
 }
