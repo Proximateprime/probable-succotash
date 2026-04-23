@@ -23,14 +23,11 @@ import '../models/session_model.dart';
 import '../services/map_service.dart';
 import '../services/network_status_service.dart';
 import '../services/offline_session_service.dart';
-import '../services/recommended_path_service.dart';
 import '../services/supabase_service.dart';
 import '../utils/map_tile_defaults.dart';
 import '../widgets/app_ui.dart';
 import 'export_screen.dart';
 import 'job_summary_screen.dart';
-
-enum TrackingViewMode { map, guidance }
 
 class TrackingScreen extends StatefulWidget {
   final String propertyId;
@@ -60,7 +57,8 @@ class TrackingScreen extends StatefulWidget {
   State<TrackingScreen> createState() => _TrackingScreenState();
 }
 
-class _TrackingScreenState extends State<TrackingScreen> {
+class _TrackingScreenState extends State<TrackingScreen>
+    with WidgetsBindingObserver {
   static const String _satelliteUrlTemplate =
       'https://mt.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
 
@@ -74,6 +72,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
   StreamSubscription<MagnetometerEvent>? _magnetometerStream;
   Timer? _elapsedTimer;
   Timer? _cancelJobTimer;
+  Timer? _wakeLockRefreshTimer;
 
   final MapController _mapController = MapController();
 
@@ -99,19 +98,18 @@ class _TrackingScreenState extends State<TrackingScreen> {
     10.0
   ];
   static const String _swathPrefPrefix = 'tracking_swath_width_feet';
-  static const String _tankPrefPrefix = 'tracking_tank_capacity_gallons';
   static const int _autoPauseInactivitySeconds = 180;
   // Discard GPS fixes worse than 8 m — tighter than the old 16 m threshold to
   // eliminate the 2+ m drift and random long-line artefacts reported in testing.
-  static const double _maxAcceptedAccuracyMeters = 8.0;
+  static const double _maxAcceptedAccuracyMeters = 4.5;
   // Max distance a point may jump in ≤3 s before being treated as a GPS ghost.
-  static const double _maxGpsJumpMeters = 15.0;
+  static const double _maxGpsJumpMeters = 10.0;
   // Rolling-average window used to smooth the recorded path.
-  static const int _gpsSmoothingBufferSize = 3;
+  static const int _gpsSmoothingBufferSize = 4;
   static const double _stationarySpeedThresholdMps = 0.85;
   static const double _highPrecisionStationarySpeedThresholdMps = 0.6;
-  static const double _stationaryExtraMovementMeters = 3.0;
-  static const double _highPrecisionStationaryExtraMovementMeters = 1.8;
+  static const double _stationaryExtraMovementMeters = 4.0;
+  static const double _highPrecisionStationaryExtraMovementMeters = 2.2;
   static const double _minAccuracyNoiseFloorMeters = 1.5;
   static const double _maxAccuracyNoiseFloorMeters = 8.5;
 
@@ -129,16 +127,6 @@ class _TrackingScreenState extends State<TrackingScreen> {
   double _accuracy = 0;
   int _elapsedSeconds = 0;
 
-  TrackingViewMode _viewMode = TrackingViewMode.map;
-  List<LatLng> _recommendedPath = const [];
-  int _guidanceSegmentIndex = -1;
-  double _distanceToLineMeters = 0;
-  String _guidanceStatus = 'No guidance path available';
-  double _displayArrowRadians = 0;
-  bool _guidanceDeviationWarning = false;
-  bool _showDeviationFlash = false;
-  DateTime? _lastDeviationHaptic;
-  Timer? _deviationFlashTimer;
 
   bool _isCheckingGnssSupport = true;
   bool _isRawGnssSupported = false;
@@ -192,10 +180,6 @@ class _TrackingScreenState extends State<TrackingScreen> {
   double? _chemicalCostPerUnit;
   final Set<int> _triggeredLowProductThresholds = <int>{};
   int? _activeLowProductThreshold;
-  bool _showGuidanceGrid = false;
-  // Screen-on toggle: when true, wakelock keeps the display on during tracking.
-  // When false, GPS tracking continues with the screen off for battery savings.
-  bool _keepScreenOn = true;
   // Blackout Mode: dims the entire screen to near-black to save battery and
   // reduce glare during field use. GPS tracking continues normally.
   // On PWAs this is purely cosmetic (the OS still drives the backlight), but
@@ -209,6 +193,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tankCapacityGallons = widget.tankCapacityGallons;
     _applicationRatePerAcre = widget.applicationRatePerAcre;
     _applicationRateUnit = widget.applicationRateUnit ?? 'gal';
@@ -444,7 +429,6 @@ class _TrackingScreenState extends State<TrackingScreen> {
     await _initConnectivityMonitoring();
     _startCompassHeadingStream();
     await _loadSwathWidthPreference();
-    await _promptForTankCapacityAtSessionStart();
     await _checkRawGnssSupport();
     await _hydrateFromOfflineDraft();
     await _loadPropertyMapData();
@@ -452,8 +436,43 @@ class _TrackingScreenState extends State<TrackingScreen> {
     _startTracking();
     _startElapsedTimer();
     // Keep screen alive while actively tracking — released on stop/pause/dispose.
-    // Respects the user's "Keep Screen Always On" toggle.
-    if (_keepScreenOn) WakelockPlus.enable();
+    unawaited(_enablePersistentWakelock());
+  }
+
+  Future<void> _enablePersistentWakelock() async {
+    try {
+      await WakelockPlus.enable();
+      if (kIsWeb) {
+        _wakeLockRefreshTimer?.cancel();
+        _wakeLockRefreshTimer = Timer.periodic(
+          const Duration(seconds: 20),
+          (_) {
+            if (_isTracking && !_isSessionEnded) {
+              unawaited(WakelockPlus.enable());
+            }
+          },
+        );
+      }
+    } catch (_) {
+      // Keep tracking active even if wake lock can't be acquired.
+    }
+  }
+
+  Future<void> _disablePersistentWakelock() async {
+    _wakeLockRefreshTimer?.cancel();
+    _wakeLockRefreshTimer = null;
+    try {
+      await WakelockPlus.disable();
+    } catch (_) {
+      // Ignore wake lock cleanup errors.
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _isTracking && !_isSessionEnded) {
+      unawaited(_enablePersistentWakelock());
+    }
   }
 
   Future<void> _hydrateFromOfflineDraft() async {
@@ -506,106 +525,6 @@ class _TrackingScreenState extends State<TrackingScreen> {
   String _swathPrefKey() {
     final userId = context.read<SupabaseService>().currentUserId ?? 'anonymous';
     return '${_swathPrefPrefix}_$userId';
-  }
-
-  String _tankPrefKey() {
-    final userId = context.read<SupabaseService>().currentUserId ?? 'anonymous';
-    return '${_tankPrefPrefix}_$userId';
-  }
-
-  Future<double?> _loadTankCapacityPreference() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      return prefs.getDouble(_tankPrefKey());
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _persistTankCapacityPreference(double value) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble(_tankPrefKey(), value);
-    } catch (_) {
-      // Continue even if preference save fails.
-    }
-  }
-
-  Future<void> _promptForTankCapacityAtSessionStart() async {
-    if (!mounted) return;
-
-    final saved = await _loadTankCapacityPreference();
-    final initial = _tankCapacityGallons ?? saved;
-    final controller = TextEditingController(
-      text: initial == null ? '' : initial.toStringAsFixed(1),
-    );
-    var remember = true;
-
-    final selected = await showDialog<double?>(
-      context: context,
-      barrierDismissible: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Tank Capacity (optional)'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: controller,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: 'Tank capacity (gal)',
-                  hintText: 'e.g. 2.0',
-                ),
-              ),
-              const SizedBox(height: 8),
-              CheckboxListTile(
-                value: remember,
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Remember for next jobs'),
-                onChanged: (value) {
-                  setDialogState(() => remember = value ?? true);
-                },
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, null),
-              child: const Text('Skip'),
-            ),
-            FilledButton(
-              onPressed: () {
-                final parsed = double.tryParse(controller.text.trim());
-                if (parsed == null || parsed <= 0) {
-                  Navigator.pop(context, null);
-                  return;
-                }
-                Navigator.pop(context, parsed);
-              },
-              child: const Text('Use'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    controller.dispose();
-    if (!mounted) return;
-
-    if (selected == null) {
-      if (saved != null && _tankCapacityGallons == null) {
-        setState(() => _tankCapacityGallons = saved);
-      }
-      return;
-    }
-
-    setState(() => _tankCapacityGallons = selected);
-    if (remember) {
-      await _persistTankCapacityPreference(selected);
-    }
   }
 
   double _normalizeSwathValue(double value) {
@@ -820,7 +739,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
     }
   }
 
-  Future<void> _primeCurrentLocation() async {
+  Future<void> _primeCurrentLocation({bool forceRecenter = false}) async {
     try {
       final position = await context.read<MapService>().getCurrentPosition();
       if (!mounted || position == null) return;
@@ -831,7 +750,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
         _accuracy = position.accuracy;
       });
 
-      if (_mapBounds == null) {
+      if (_mapBounds == null || forceRecenter) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           _mapController.move(
@@ -920,8 +839,6 @@ class _TrackingScreenState extends State<TrackingScreen> {
       final specialZones = _extractSpecialZones(property.specialZones);
       final sprayableZones =
           specialZones.where((zone) => zone.isSprayable).toList();
-      final recommendedPath = _extractRecommendedPath(property.recommendedPath);
-
       setState(() {
         _property = property;
         _propertyBoundary = mapPoints;
@@ -934,7 +851,6 @@ class _TrackingScreenState extends State<TrackingScreen> {
         _specialZones = specialZones;
         _activeZoneSelection =
             sprayableZones.isEmpty ? '' : _allSprayableSelectionId;
-        _recommendedPath = recommendedPath;
         _isLoadingMap = false;
       });
 
@@ -958,19 +874,19 @@ class _TrackingScreenState extends State<TrackingScreen> {
     }
   }
 
-  void _startTracking() {
+  Future<void> _startTracking() async {
     final mapService = context.read<MapService>();
     _positionStream?.cancel();
 
-    // Center map on current GPS position when tracking starts
-    if (_latitude != 0 || _longitude != 0) {
-      _mapController.move(LatLng(_latitude, _longitude), _mapController.camera.zoom);
-    } else {
-      _primeCurrentLocation();
+    // Always begin from a fresh live fix so Start Tracking snaps to real location.
+    await _primeCurrentLocation(forceRecenter: true);
+    if (_isTracking && !_isSessionEnded) {
+      unawaited(_enablePersistentWakelock());
     }
 
+    // Battery-aware high accuracy: keep 1-second updates but avoid 0m noise churn.
     final intervalSeconds = _highAccuracyGnssEnabled ? 1 : 2;
-    final distanceFilterMeters = _highAccuracyGnssEnabled ? 0 : 1;
+    final distanceFilterMeters = _highAccuracyGnssEnabled ? 1 : 2;
 
     _positionStream = mapService
         .getPositionStream(
@@ -1000,8 +916,6 @@ class _TrackingScreenState extends State<TrackingScreen> {
           _latitude = position.latitude;
           _longitude = position.longitude;
           _accuracy = position.accuracy.isFinite ? position.accuracy : 0;
-          _updateGuidanceForPoint(currentPoint);
-
           if (inMapBounds &&
               insideOuterBoundary &&
               insideActiveZone &&
@@ -1128,7 +1042,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
 
     // Release wakelock while idle — the screen doesn't need to stay on when
     // the device is in a pocket after inactivity.
-    WakelockPlus.disable();
+    _disablePersistentWakelock();
 
     _showSnackBar(
       AppSnackBar.warning(
@@ -1266,11 +1180,11 @@ class _TrackingScreenState extends State<TrackingScreen> {
         _gpsSmoothingBuffer.clear();
         _autoPausedByInactivity = false;
         _lastMovementAt ??= DateTime.now();
-        // Re-enable wakelock when resuming — only if the user wants screen on.
-        if (_keepScreenOn) WakelockPlus.enable();
+        // Re-enable wakelock when resuming.
+        unawaited(_enablePersistentWakelock());
       } else {
         // Release wakelock while paused — user is reviewing, not walking.
-        WakelockPlus.disable();
+        _disablePersistentWakelock();
       }
     });
   }
@@ -1415,7 +1329,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
       _pathVersion++;
     });
 
-    WakelockPlus.disable();
+    _disablePersistentWakelock();
 
     await _positionStream?.cancel();
     await _stopRawGnssCapture();
@@ -1695,7 +1609,7 @@ Future<void> _stopTracking() async {
     });
 
     // Session is over — release the screen wakelock so OS can manage power.
-    WakelockPlus.disable();
+    _disablePersistentWakelock();
 
     await _positionStream?.cancel();
     await _stopRawGnssCapture();
@@ -1845,7 +1759,7 @@ Future<void> _stopTracking() async {
       _isSessionEnded = true;
     });
 
-    WakelockPlus.disable();
+    _disablePersistentWakelock();
 
     await _positionStream?.cancel();
     await _stopRawGnssCapture();
@@ -2203,9 +2117,9 @@ Future<void> _stopTracking() async {
         polygons.add(
           Polygon(
             points: points,
-            color: Colors.red.withValues(alpha: 0.28),
+            color: Colors.red.withValues(alpha: 0.18),
             borderColor: Colors.red,
-            borderStrokeWidth: 2,
+            borderStrokeWidth: 1.2,
             isFilled: true,
           ),
         );
@@ -2456,222 +2370,6 @@ Future<void> _stopTracking() async {
     } catch (_) {
       return false;
     }
-  }
-
-  List<LatLng> _extractRecommendedPath(dynamic rawPath) {
-    if (rawPath == null) return const [];
-
-    List<dynamic>? coordinateNodes;
-
-    if (rawPath is Map) {
-      final map = Map<String, dynamic>.from(rawPath);
-      final type = (map['type'] ?? '').toString();
-
-      if (type == 'LineString' && map['coordinates'] is List) {
-        coordinateNodes = map['coordinates'] as List;
-      } else if (type == 'FeatureCollection' && map['features'] is List) {
-        final features = map['features'] as List;
-        for (final feature in features) {
-          if (feature is Map && feature['geometry'] is Map) {
-            final geometry =
-                Map<String, dynamic>.from(feature['geometry'] as Map);
-            if ((geometry['type'] ?? '') == 'LineString' &&
-                geometry['coordinates'] is List) {
-              coordinateNodes = geometry['coordinates'] as List;
-              break;
-            }
-          }
-        }
-      }
-    } else if (rawPath is List) {
-      coordinateNodes = rawPath;
-    }
-
-    if (coordinateNodes == null || coordinateNodes.isEmpty) return const [];
-
-    final points = <LatLng>[];
-    for (final node in coordinateNodes) {
-      if (node is Map) {
-        final map = Map<String, dynamic>.from(node);
-        final latValue = map['lat'] ?? map['latitude'];
-        final lngValue = map['lng'] ?? map['lon'] ?? map['longitude'];
-        if (latValue is num && lngValue is num) {
-          points.add(LatLng(latValue.toDouble(), lngValue.toDouble()));
-        }
-      } else if (node is List && node.length >= 2) {
-        final a = node[0];
-        final b = node[1];
-        if (a is num && b is num) {
-          final first = a.toDouble();
-          final second = b.toDouble();
-          if (first.abs() <= 90 && second.abs() <= 180) {
-            points.add(LatLng(first, second));
-          } else {
-            points.add(LatLng(second, first));
-          }
-        }
-      }
-    }
-
-    return points;
-  }
-
-  void _updateGuidanceForPoint(LatLng currentPoint) {
-    if (_recommendedPath.length < 2) {
-      _guidanceSegmentIndex = -1;
-      _distanceToLineMeters = 0;
-      _guidanceStatus = 'No guidance path available';
-      _displayArrowRadians = 0;
-      _guidanceDeviationWarning = false;
-      return;
-    }
-
-    var bestSegment = 0;
-    var minDistance = double.infinity;
-    var bestSignedOffset = 0.0;
-
-    for (var i = 0; i < _recommendedPath.length - 1; i++) {
-      final a = _recommendedPath[i];
-      final b = _recommendedPath[i + 1];
-      final metrics = _pointToSegmentMetrics(currentPoint, a, b);
-      if (metrics.distanceMeters < minDistance) {
-        minDistance = metrics.distanceMeters;
-        bestSegment = i;
-        bestSignedOffset = metrics.signedOffsetMeters;
-      }
-    }
-
-    final swathHalfMeters = (_swathWidthFeet * 0.3048) / 2;
-    String driftStatus;
-    if (minDistance <= swathHalfMeters) {
-      driftStatus = 'On path';
-    } else if (bestSignedOffset > 0) {
-      driftStatus = 'Drifting left';
-    } else {
-      driftStatus = 'Drifting right';
-    }
-
-    final start = _recommendedPath[bestSegment];
-    final end = _recommendedPath[bestSegment + 1];
-    final targetArrow = _bearingRadians(start, end);
-    final smoothedArrow = _smoothAngle(_displayArrowRadians, targetArrow, 0.22);
-
-    final offLine = minDistance > swathHalfMeters;
-    if (offLine && _viewMode == TrackingViewMode.guidance) {
-      _triggerDeviationWarning();
-    }
-
-    _guidanceSegmentIndex = bestSegment;
-    _distanceToLineMeters = minDistance;
-    _guidanceStatus = driftStatus;
-    _displayArrowRadians = smoothedArrow;
-    _guidanceDeviationWarning = offLine;
-  }
-
-  double _smoothAngle(double current, double target, double alpha) {
-    var delta = target - current;
-    while (delta > math.pi) delta -= 2 * math.pi;
-    while (delta < -math.pi) delta += 2 * math.pi;
-    return current + (delta * alpha);
-  }
-
-  void _triggerDeviationWarning() {
-    final now = DateTime.now();
-    final canPulse = _lastDeviationHaptic == null ||
-        now.difference(_lastDeviationHaptic!).inMilliseconds >= 1400;
-    if (!canPulse) return;
-
-    _lastDeviationHaptic = now;
-    HapticFeedback.heavyImpact();
-
-    _deviationFlashTimer?.cancel();
-    _showDeviationFlash = true;
-    _deviationFlashTimer = Timer(const Duration(milliseconds: 170), () {
-      if (!mounted) return;
-      setState(() => _showDeviationFlash = false);
-    });
-  }
-
-  ({double distanceMeters, double signedOffsetMeters}) _pointToSegmentMetrics(
-    LatLng point,
-    LatLng a,
-    LatLng b,
-  ) {
-    final refLat = a.latitude;
-    final refLng = a.longitude;
-    final metersPerDegLat = 111320.0;
-    final metersPerDegLng = 111320.0 * math.cos(refLat * math.pi / 180);
-
-    final bx = (b.longitude - refLng) * metersPerDegLng;
-    final by = (b.latitude - refLat) * metersPerDegLat;
-    final px = (point.longitude - refLng) * metersPerDegLng;
-    final py = (point.latitude - refLat) * metersPerDegLat;
-
-    final segmentLengthSq = (bx * bx) + (by * by);
-    if (segmentLengthSq < 1e-6) {
-      final dist = math.sqrt((px * px) + (py * py));
-      return (distanceMeters: dist, signedOffsetMeters: 0);
-    }
-
-    final t = ((px * bx) + (py * by)) / segmentLengthSq;
-    final clampedT = t.clamp(0.0, 1.0);
-    final projX = bx * clampedT;
-    final projY = by * clampedT;
-
-    final dx = px - projX;
-    final dy = py - projY;
-    final dist = math.sqrt((dx * dx) + (dy * dy));
-
-    final cross = (bx * py) - (by * px);
-    final signed = cross >= 0 ? dist : -dist;
-
-    return (distanceMeters: dist, signedOffsetMeters: signed);
-  }
-
-  double _bearingRadians(LatLng from, LatLng to) {
-    final lat1 = from.latitude * math.pi / 180;
-    final lat2 = to.latitude * math.pi / 180;
-    final dLon = (to.longitude - from.longitude) * math.pi / 180;
-    final y = math.sin(dLon) * math.cos(lat2);
-    final x = math.cos(lat1) * math.sin(lat2) -
-        math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
-    return math.atan2(y, x);
-  }
-
-  List<Polyline> _buildGuidanceSegmentDashedPolylines() {
-    if (_guidanceSegmentIndex < 0 ||
-        _guidanceSegmentIndex >= _recommendedPath.length - 1) {
-      return const [];
-    }
-
-    final start = _recommendedPath[_guidanceSegmentIndex];
-    final end = _recommendedPath[_guidanceSegmentIndex + 1];
-    const dashCount = 14;
-    final lines = <Polyline>[];
-
-    for (var i = 0; i < dashCount; i++) {
-      if (i.isOdd) continue;
-      final t1 = i / dashCount;
-      final t2 = (i + 1) / dashCount;
-      final p1 = LatLng(
-        start.latitude + (end.latitude - start.latitude) * t1,
-        start.longitude + (end.longitude - start.longitude) * t1,
-      );
-      final p2 = LatLng(
-        start.latitude + (end.latitude - start.latitude) * t2,
-        start.longitude + (end.longitude - start.longitude) * t2,
-      );
-
-      lines.add(
-        Polyline(
-          points: [p1, p2],
-          strokeWidth: 7,
-          color: const Color(0xFF1565C0),
-        ),
-      );
-    }
-
-    return lines;
   }
 
   double _effectiveReachHeadingDegrees() {
@@ -3078,27 +2776,6 @@ Future<void> _stopTracking() async {
             ),
             const SizedBox(height: 6),
           ],
-          // Screen-off banner (compact)
-          if (!_keepScreenOn && _isTracking && !_isSessionEnded) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1565C0).withValues(alpha: 0.22),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.screen_lock_portrait, color: Colors.white70, size: 14),
-                  SizedBox(width: 4),
-                  Text('Screen-off — GPS recording',
-                      style: TextStyle(color: Colors.white70, fontSize: 11)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 4),
-          ],
           // Critical product warning (shown inline only when low)
           if ((isLowProduct || isCriticalProduct) &&
               summary.tankCapacityGallons != null &&
@@ -3416,257 +3093,6 @@ Future<void> _stopTracking() async {
   }
 
 
-  Widget _buildViewModeToggle() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.48),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
-      ),
-      child: SegmentedButton<TrackingViewMode>(
-        showSelectedIcon: false,
-        segments: const [
-          ButtonSegment<TrackingViewMode>(
-            value: TrackingViewMode.map,
-            icon: Icon(Icons.map_outlined, size: 18),
-            label: Text('Map'),
-          ),
-          ButtonSegment<TrackingViewMode>(
-            value: TrackingViewMode.guidance,
-            icon: Icon(Icons.navigation_outlined, size: 18),
-            label: Text('Guidance'),
-          ),
-        ],
-        selected: {_viewMode},
-        onSelectionChanged: (selection) {
-          setState(() => _viewMode = selection.first);
-        },
-        style: ButtonStyle(
-          foregroundColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected)
-                ? Colors.black
-                : Colors.white,
-          ),
-          backgroundColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected)
-                ? const Color(0xFFA5D6A7)
-                : Colors.transparent,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildGuidanceStatusCard() {
-    final onPath = _guidanceStatus == 'On path';
-    final statusColor = _guidanceDeviationWarning
-        ? const Color(0xFFFF5252)
-        : (onPath ? const Color(0xFF66BB6A) : const Color(0xFFFFB300));
-
-    return Container(
-      width: 235,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Guidance',
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Distance to line: ${AppFormat.meters(_distanceToLineMeters)}',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.white,
-                ),
-          ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Icon(Icons.circle, size: 10, color: statusColor),
-              const SizedBox(width: 6),
-              Text(
-                _guidanceStatus,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: statusColor,
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-            ],
-          ),
-          if (_guidanceDeviationWarning) ...[
-            const SizedBox(height: 4),
-            Text(
-              'Deviation warning: more than half swath off line',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: const Color(0xFFFF8A80),
-                    fontWeight: FontWeight.w700,
-                  ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildGuidanceMissingPathCard() {
-    return Container(
-      width: 280,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            'Generate path first for guidance',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'No recommended_path detected on this property.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.white70,
-                ),
-          ),
-          const SizedBox(height: 10),
-          FilledButton.icon(
-            onPressed: _generateRecommendedPath,
-            icon: const Icon(Icons.alt_route_outlined),
-            label: const Text('Generate Path'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCoveragePreviewPanel() {
-    final coverage = _liveCoveragePercent();
-    final center = _initialCenter();
-    final previewCoverage = _coveragePolygonPoints();
-    final previewReachCoverage = _reachCoveragePolygons();
-
-    return Container(
-      width: 185,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Coverage Mini-Map',
-            style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                ),
-          ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: SizedBox(
-              height: 120,
-              child: FlutterMap(
-                options: MapOptions(
-                  initialCenter: center,
-                  initialZoom: 16,
-                  interactionOptions:
-                      const InteractionOptions(flags: InteractiveFlag.none),
-                ),
-                children: [
-                  TileLayer(
-                    urlTemplate: _property?.hasOrthomosaic() == true
-                        ? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
-                        : _satelliteUrlTemplate,
-                    subdomains: _property?.hasOrthomosaic() == true
-                        ? const ['a', 'b', 'c']
-                        : const [],
-                    userAgentPackageName: MapTileDefaults.userAgent,
-                    errorImage: MapTileDefaults.offlineTileImage,
-                    evictErrorTileStrategy:
-                        EvictErrorTileStrategy.notVisibleRespectMargin,
-                  ),
-                    PolylineLayer(polylines: _outerBoundaryDashed),
-                  if (_specialZones.isNotEmpty)
-                    PolygonLayer(
-                      polygons: _specialZones
-                          .map(
-                            (zone) => Polygon(
-                              points: zone.ring,
-                              color: zone.color.withValues(alpha: 0.22),
-                              borderColor: zone.color,
-                              borderStrokeWidth: 2,
-                              isFilled: true,
-                            ),
-                          )
-                          .toList(growable: false),
-                    ),
-                  if (_exclusionPolygons.isNotEmpty)
-                    PolygonLayer(polygons: _exclusionPolygons),
-                  if (!_reachModeEnabled && previewCoverage.length >= 3)
-                    PolygonLayer(
-                      polygons: [
-                        Polygon(
-                          points: previewCoverage,
-                          color: Colors.green.withValues(alpha: 0.26),
-                          borderColor: Colors.green,
-                          borderStrokeWidth: 1,
-                          holePointsList: _exclusionRings,
-                          isFilled: true,
-                        ),
-                      ],
-                    ),
-                  if (_reachModeEnabled && previewReachCoverage.isNotEmpty)
-                    PolygonLayer(
-                      polygons: previewReachCoverage
-                          .where((ring) => ring.length >= 3)
-                          .map(
-                            (ring) => Polygon(
-                              points: ring,
-                              color: Colors.green.withValues(alpha: 0.22),
-                              borderColor: Colors.green,
-                              borderStrokeWidth: 1,
-                              isFilled: true,
-                            ),
-                          )
-                          .toList(growable: false),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${AppFormat.percent(coverage)} covered',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildCancelJobButton() {
     final label = _cancelJobArmed
         ? 'Cancel ($_cancelJobTapsRemaining/3) ${_cancelJobSecondsLeft}s'
@@ -3680,251 +3106,6 @@ Future<void> _stopTracking() async {
       icon: const Icon(Icons.cancel_outlined),
       label: Text(label),
     );
-  }
-
-  Future<void> _generateRecommendedPath() async {
-    final property = _property;
-    final boundary = property == null
-        ? null
-        : (property.outerBoundary ??
-            _extractPolygonFromAnyGeoJson(property.mapGeojson));
-    if (property == null || boundary == null) {
-      if (!mounted) return;
-      _showSnackBar(
-        AppSnackBar.warning(
-            'Import a map or set an outer boundary before generating a path.'),
-      );
-      return;
-    }
-
-    try {
-      final result = RecommendedPathService().generate(
-        boundaryGeoJson: boundary,
-        exclusionZones: property.exclusionZones ?? const [],
-        swathWidthFeet: _swathWidthFeet,
-      );
-
-      final supabase = context.read<SupabaseService>();
-      await supabase.updateRecommendedPath(
-        propertyId: widget.propertyId,
-        recommendedPath: result.geoJson,
-      );
-
-      if (!mounted) return;
-      setState(() {
-        _property = Property(
-          id: property.id,
-          name: property.name,
-          address: property.address,
-          notes: property.notes,
-          ownerId: property.ownerId,
-          assignedTo: property.assignedTo,
-          mapGeojson: property.mapGeojson,
-          orthomosaicUrl: property.orthomosaicUrl,
-          exclusionZones: property.exclusionZones,
-          specialZones: property.specialZones,
-          outerBoundary: property.outerBoundary,
-          recommendedPath: result.geoJson,
-          treatmentType: property.treatmentType,
-          lastApplication: property.lastApplication,
-          frequencyDays: property.frequencyDays,
-          nextDue: property.nextDue,
-          applicationRatePerAcre: property.applicationRatePerAcre,
-          applicationRateUnit: property.applicationRateUnit,
-          chemicalCostPerUnit: property.chemicalCostPerUnit,
-          defaultTankCapacityGallons: property.defaultTankCapacityGallons,
-          createdAt: property.createdAt,
-        );
-        _recommendedPath = _extractRecommendedPath(result.geoJson);
-        _guidanceSegmentIndex = 0;
-      });
-      _showSnackBar(
-        result.usedFallback
-            ? AppSnackBar.warning(
-                'Recommended path generated with fallback mode.')
-            : AppSnackBar.success('Recommended path generated.'),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _showSnackBar(
-        AppSnackBar.error('Could not generate a recommended path.'),
-      );
-    }
-  }
-
-  Map<String, dynamic>? _extractPolygonFromAnyGeoJson(
-    Map<String, dynamic>? rawGeoJson,
-  ) {
-    if (rawGeoJson == null) return null;
-
-    final type = (rawGeoJson['type'] ?? '').toString();
-    if (type == 'Polygon' && rawGeoJson['coordinates'] is List) {
-      return rawGeoJson;
-    }
-
-    if (type == 'Feature' && rawGeoJson['geometry'] is Map) {
-      final geometry = Map<String, dynamic>.from(
-          rawGeoJson['geometry'] as Map<dynamic, dynamic>);
-      if ((geometry['type'] ?? '').toString() == 'Polygon' &&
-          geometry['coordinates'] is List) {
-        return geometry;
-      }
-    }
-
-    if (type == 'FeatureCollection' && rawGeoJson['features'] is List) {
-      for (final feature in rawGeoJson['features'] as List) {
-        if (feature is Map && feature['geometry'] is Map) {
-          final geometry = Map<String, dynamic>.from(
-              feature['geometry'] as Map<dynamic, dynamic>);
-          if ((geometry['type'] ?? '').toString() == 'Polygon' &&
-              geometry['coordinates'] is List) {
-            return geometry;
-          }
-        }
-      }
-    }
-
-    return null;
-  }
-
-  // ── Guidance Grid ─────────────────────────────────────────────────────────
-
-  List<Polyline> _buildGuidanceGridLines() {
-    final boundary = _outerBoundaryRing.length >= 3
-        ? _outerBoundaryRing
-        : _propertyBoundary;
-    if (boundary.length < 3) return const [];
-
-    final swathMeters = _swathWidthFeet * 0.3048;
-    if (swathMeters < 0.3) return const [];
-
-    // Find bounding box of the boundary.
-    var minLat = boundary.first.latitude;
-    var maxLat = boundary.first.latitude;
-    var minLng = boundary.first.longitude;
-    var maxLng = boundary.first.longitude;
-    for (final p in boundary) {
-      if (p.latitude < minLat) minLat = p.latitude;
-      if (p.latitude > maxLat) maxLat = p.latitude;
-      if (p.longitude < minLng) minLng = p.longitude;
-      if (p.longitude > maxLng) maxLng = p.longitude;
-    }
-
-    final midLat = (minLat + maxLat) / 2;
-    const metersPerDegLat = 111320.0;
-    final metersPerDegLng = metersPerDegLat * math.cos(midLat * math.pi / 180);
-    final spacingDegLng = swathMeters / math.max(1.0, metersPerDegLng);
-    final spacingDegLat = swathMeters / metersPerDegLat;
-
-    const gridColor = Color(0x66FFFF00); // 40% yellow — visible outdoors
-
-    final lines = <Polyline>[];
-
-    // Vertical (N–S) lines
-    var lng = minLng + spacingDegLng;
-    while (lng < maxLng) {
-      final clipped = _clipVerticalLineToBoundary(lng, minLat, maxLat, boundary);
-      for (final segment in clipped) {
-        lines.add(Polyline(
-          points: segment,
-          strokeWidth: 1.4,
-          color: gridColor,
-        ));
-      }
-      lng += spacingDegLng;
-    }
-
-    // Horizontal (E–W) lines
-    var lat = minLat + spacingDegLat;
-    while (lat < maxLat) {
-      final clipped =
-          _clipHorizontalLineToBoundary(lat, minLng, maxLng, boundary);
-      for (final segment in clipped) {
-        lines.add(Polyline(
-          points: segment,
-          strokeWidth: 1.4,
-          color: gridColor,
-        ));
-      }
-      lat += spacingDegLat;
-    }
-
-    return lines;
-  }
-
-  List<List<LatLng>> _clipVerticalLineToBoundary(
-    double lng,
-    double minLat,
-    double maxLat,
-    List<LatLng> boundary,
-  ) {
-    // Find intersections of vertical line x=lng with boundary edges.
-    final intersections = <double>[];
-    final closed = List<LatLng>.from(boundary);
-    if (!_samePoint(closed.first, closed.last)) closed.add(closed.first);
-
-    for (var i = 0; i < closed.length - 1; i++) {
-      final a = closed[i];
-      final b = closed[i + 1];
-      final aLng = a.longitude;
-      final bLng = b.longitude;
-      if ((aLng <= lng && bLng >= lng) || (bLng <= lng && aLng >= lng)) {
-        final range = bLng - aLng;
-        if (range.abs() < 1e-12) continue;
-        final t = (lng - aLng) / range;
-        if (t >= 0 && t <= 1) {
-          intersections.add(a.latitude + t * (b.latitude - a.latitude));
-        }
-      }
-    }
-    if (intersections.length < 2) return const [];
-    intersections.sort();
-
-    final segments = <List<LatLng>>[];
-    for (var i = 0; i < intersections.length - 1; i += 2) {
-      segments.add([
-        LatLng(intersections[i], lng),
-        LatLng(intersections[i + 1], lng),
-      ]);
-    }
-    return segments;
-  }
-
-  List<List<LatLng>> _clipHorizontalLineToBoundary(
-    double lat,
-    double minLng,
-    double maxLng,
-    List<LatLng> boundary,
-  ) {
-    final intersections = <double>[];
-    final closed = List<LatLng>.from(boundary);
-    if (!_samePoint(closed.first, closed.last)) closed.add(closed.first);
-
-    for (var i = 0; i < closed.length - 1; i++) {
-      final a = closed[i];
-      final b = closed[i + 1];
-      final aLat = a.latitude;
-      final bLat = b.latitude;
-      if ((aLat <= lat && bLat >= lat) || (bLat <= lat && aLat >= lat)) {
-        final range = bLat - aLat;
-        if (range.abs() < 1e-12) continue;
-        final t = (lat - aLat) / range;
-        if (t >= 0 && t <= 1) {
-          intersections.add(a.longitude + t * (b.longitude - a.longitude));
-        }
-      }
-    }
-    if (intersections.length < 2) return const [];
-    intersections.sort();
-
-    final segments = <List<LatLng>>[];
-    for (var i = 0; i < intersections.length - 1; i += 2) {
-      segments.add([
-        LatLng(lat, intersections[i]),
-        LatLng(lat, intersections[i + 1]),
-      ]);
-    }
-    return segments;
   }
 
   // ── Advanced Drawer ───────────────────────────────────────────────────────
@@ -4044,15 +3225,6 @@ Future<void> _stopTracking() async {
                       ? null
                       : (v) => setState(() => _showOverlapHeatmap = v),
                 ),
-                _drawerSwitch(
-                  title: 'Guidance Grid',
-                  trailing: _helpIcon('Guidance Grid',
-                      'Shows parallel lines spaced at your swath width so you can '
-                      'mow/spray in straight, evenly-spaced passes.'),
-                  subtitle: 'Show parallel lines at swath spacing',
-                  value: _showGuidanceGrid,
-                  onChanged: (v) => setState(() => _showGuidanceGrid = v),
-                ),
                 const Divider(color: Colors.white24, height: 24),
                 // Blackout Mode toggle — turns the display almost entirely black
                 // to save battery (especially on OLED) and reduce glare in the
@@ -4075,29 +3247,6 @@ Future<void> _stopTracking() async {
                           setState(() => _blackoutMode = v);
                           // Close the drawer so the blackout overlay is visible.
                           if (v) Navigator.of(context).pop();
-                        },
-                ),
-                // Screen-on / screen-off toggle. When disabled, the GPS stream
-                // continues recording coverage points even with the display off,
-                // for accountability and battery savings on long jobs.
-                _drawerSwitch(
-                  title: 'Screen Always On',
-                  trailing: _helpIcon('Keep Screen Always On',
-                      'Prevents the screen from sleeping during tracking using wakelock. '
-                      'Turn off to save battery — GPS still records in the background.'),
-                  subtitle: _keepScreenOn
-                      ? 'Display stays on while tracking'
-                      : 'Screen may turn off — GPS keeps recording',
-                  value: _keepScreenOn,
-                  onChanged: _isSessionEnded
-                      ? null
-                      : (v) {
-                          setState(() => _keepScreenOn = v);
-                          if (v && _isTracking) {
-                            WakelockPlus.enable();
-                          } else if (!v) {
-                            WakelockPlus.disable();
-                          }
                         },
                 ),
                 const Divider(color: Colors.white24, height: 24),
@@ -4262,16 +3411,17 @@ Future<void> _stopTracking() async {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     // Always release wakelock on dispose — covers cases where the widget is
     // removed without going through the normal stop/abandon flow (e.g. OS kill).
-    WakelockPlus.disable();
+    unawaited(_disablePersistentWakelock());
     _positionStream?.cancel();
     _connectivitySubscription?.cancel();
     _rawGnssSubscription?.cancel();
     _magnetometerStream?.cancel();
     _cancelJobTimer?.cancel();
     _elapsedTimer?.cancel();
-    _deviationFlashTimer?.cancel();
+    _wakeLockRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -4286,12 +3436,17 @@ Future<void> _stopTracking() async {
       endDrawer: _buildAdvancedDrawer(context),
       appBar: AppBar(
         backgroundColor: Colors.black.withValues(alpha: 0.26),
-        title: Text(widget.propertyName),
+        title: Text(
+          widget.propertyName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+        ),
         actions: [
           Builder(
             builder: (ctx) => IconButton(
-              icon: const Icon(Icons.tune, color: Colors.white),
-              tooltip: 'Advanced Controls',
+              icon: const Icon(Icons.more_vert, color: Colors.white),
+              tooltip: 'More',
               onPressed: () => Scaffold.of(ctx).openEndDrawer(),
             ),
           ),
@@ -4307,7 +3462,7 @@ Future<void> _stopTracking() async {
                     switchInCurve: Curves.easeOut,
                     switchOutCurve: Curves.easeIn,
                     child: FlutterMap(
-                      key: ValueKey(_viewMode),
+                      key: const ValueKey('tracking_map'),
                       mapController: _mapController,
                       options: MapOptions(
                         initialCenter: _initialCenter(),
@@ -4370,26 +3525,6 @@ Future<void> _stopTracking() async {
                           ),
                         if (_exclusionPolygons.isNotEmpty)
                           PolygonLayer(polygons: _exclusionPolygons),
-                        if (_showGuidanceGrid)
-                          PolylineLayer(
-                            polylines: _buildGuidanceGridLines(),
-                          ),
-                        if (_viewMode == TrackingViewMode.guidance &&
-                            _recommendedPath.length >= 2)
-                          PolylineLayer(
-                            polylines: [
-                              Polyline(
-                                points: _recommendedPath,
-                                strokeWidth: 3,
-                                color: const Color(0xFF64B5F6)
-                                    .withValues(alpha: 0.72),
-                              ),
-                            ],
-                          ),
-                        if (_viewMode == TrackingViewMode.guidance)
-                          PolylineLayer(
-                            polylines: _buildGuidanceSegmentDashedPolylines(),
-                          ),
                         if ((_reachModeEnabled && _reachCoveragePolygons().isNotEmpty) || (!_reachModeEnabled && _paths.length >= 2))
                           PolylineLayer(
                             polylines: [
@@ -4475,7 +3610,6 @@ Future<void> _stopTracking() async {
                                               .withValues(alpha: 0.22),
                                           borderColor: Colors.green,
                                           borderStrokeWidth: 1.4,
-                                          holePointsList: _exclusionRings,
                                           isFilled: true,
                                         ),
                                       ],
@@ -4488,23 +3622,6 @@ Future<void> _stopTracking() async {
                         if (_latitude != 0 || _longitude != 0)
                           MarkerLayer(
                             markers: [
-                              if (_viewMode == TrackingViewMode.guidance &&
-                                  _recommendedPath.length >= 2)
-                                Marker(
-                                  point: LatLng(_latitude, _longitude),
-                                  width: 54,
-                                  height: 54,
-                                  child: Center(
-                                    child: Transform.rotate(
-                                      angle: _displayArrowRadians,
-                                      child: const Icon(
-                                        Icons.navigation,
-                                        color: Color(0xFF1565C0),
-                                        size: 32,
-                                      ),
-                                    ),
-                                  ),
-                                ),
                               Marker(
                                 point: LatLng(_latitude, _longitude),
                                 width: 24,
@@ -4595,44 +3712,12 @@ Future<void> _stopTracking() async {
                   ),
                 ),
                 Positioned(
-                  left: 12,
-                  right: 12,
-                  top: MediaQuery.of(context).padding.top + 8,
-                  child: Center(child: _buildViewModeToggle()),
-                ),
-                if (_viewMode == TrackingViewMode.guidance)
-                  Positioned(
-                    left: 12,
-                    top: MediaQuery.of(context).padding.top + 74,
-                    child: _recommendedPath.length >= 2
-                        ? _buildGuidanceStatusCard()
-                        : _buildGuidanceMissingPathCard(),
-                  ),
-                if (_viewMode == TrackingViewMode.guidance &&
-                    _recommendedPath.length >= 2)
-                  Positioned(
-                    right: 12,
-                    top: MediaQuery.of(context).padding.top + 74,
-                    child: _buildCoveragePreviewPanel(),
-                  ),
-                Positioned(
                   left: 14,
                   // Compact overlay is ~120 px tall; keep cancel button above it.
                   bottom: MediaQuery.of(context).padding.bottom + 140,
                   child: Opacity(
                     opacity: 0.86,
                     child: _buildCancelJobButton(),
-                  ),
-                ),
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: AnimatedOpacity(
-                      opacity: _showDeviationFlash ? 1 : 0,
-                      duration: const Duration(milliseconds: 140),
-                      child: Container(
-                        color: const Color(0x66FF1744),
-                      ),
-                    ),
                   ),
                 ),
                 Positioned(
@@ -4665,6 +3750,26 @@ Future<void> _stopTracking() async {
                     foregroundColor: Colors.white,
                     tooltip: 'Add Point of Interest',
                     child: const Icon(Icons.place_outlined),
+                  ),
+                ),
+                Positioned(
+                  right: 16,
+                  top: MediaQuery.of(context).padding.top + 168,
+                  child: FloatingActionButton.small(
+                    heroTag: 'blackout_btn',
+                    onPressed: _isSessionEnded
+                        ? null
+                        : () => setState(() => _blackoutMode = !_blackoutMode),
+                    backgroundColor: _blackoutMode
+                        ? const Color(0xCCFB8C00)
+                        : Colors.black.withValues(alpha: 0.55),
+                    foregroundColor: Colors.white,
+                    tooltip: _blackoutMode ? 'Restore View' : 'Blackout Mode',
+                    child: Icon(
+                      _blackoutMode
+                          ? Icons.visibility
+                          : Icons.visibility_off_outlined,
+                    ),
                   ),
                 ),
                 Align(
@@ -4726,7 +3831,7 @@ Future<void> _stopTracking() async {
                                     onPressed: () =>
                                         setState(() => _blackoutMode = false),
                                     icon: const Icon(Icons.visibility),
-                                    label: const Text('Show Map'),
+                                    label: const Text('Restore View'),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: const Color(0xFFFF8F00),
                                       foregroundColor: Colors.white,
