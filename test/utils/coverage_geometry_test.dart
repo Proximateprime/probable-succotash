@@ -28,7 +28,7 @@ void main() {
 
     test('measures a short north-south step near 40N', () {
       const start = GeoPoint(40.0, -75.0);
-      final end = GeoPoint(40.0 + (0.005 / _metersPerDegreeLatitude), -75.0);
+      const end = GeoPoint(40.0 + (0.005 / _metersPerDegreeLatitude), -75.0);
       expect(distanceMeters(start, end), closeTo(0.004999977186841367, 1e-9));
     });
   });
@@ -76,7 +76,10 @@ void main() {
         isEmpty,
       );
 
-      final jitter = GeoPoint(40.0 + (0.005 / _metersPerDegreeLatitude), -75.0);
+      const jitter = GeoPoint(
+        40.0 + (0.005 / _metersPerDegreeLatitude),
+        -75.0,
+      );
       expect(
         buildCoveragePolygon([const GeoPoint(40, -75), jitter], swathFeet),
         isEmpty,
@@ -91,7 +94,7 @@ void main() {
       expect(polygon, hasLength(5));
       expect(polygon.first, polygon.last);
 
-      final latShift = halfSwathMeters / _metersPerDegreeLatitude;
+      const latShift = halfSwathMeters / _metersPerDegreeLatitude;
       expect(polygon[0][0], closeTo(start.latitude + latShift, 1e-12));
       expect(polygon[0][1], closeTo(start.longitude, 1e-12));
       expect(polygon[1][0], closeTo(end.latitude + latShift, 1e-12));
@@ -136,11 +139,11 @@ void main() {
       expect(polygon, hasLength(7));
       expect(polygon.first, polygon.last);
       for (final vertex in polygon) {
-        expect(vertex[0], isFinite);
-        expect(vertex[1], isFinite);
+        expect(vertex[0].isFinite, isTrue);
+        expect(vertex[1].isFinite, isTrue);
       }
 
-      final latShift = halfSwathMeters / _metersPerDegreeLatitude;
+      const latShift = halfSwathMeters / _metersPerDegreeLatitude;
       expect(polygon[0][0], closeTo(start.latitude + latShift, 1e-12));
       expect(polygon[0][1], closeTo(start.longitude, 1e-12));
 
@@ -246,9 +249,9 @@ void main() {
     test('leaves a vertex that sits on the centroid unmoved', () {
       const latitude = 39.5;
       const longitude = -104.9;
-      final dLat = 40 / _metersPerDegreeLatitude;
-      final buffered = expandRingOutwardMeters([
-        const GeoPoint(latitude, longitude),
+      const dLat = 40 / _metersPerDegreeLatitude;
+      final buffered = expandRingOutwardMeters(const [
+        GeoPoint(latitude, longitude),
         GeoPoint(latitude + dLat, longitude),
         GeoPoint(latitude - dLat, longitude),
       ], 10);
