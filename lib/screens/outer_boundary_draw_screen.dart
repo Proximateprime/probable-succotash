@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../models/property_model.dart';
+import '../utils/coverage_geometry.dart';
 import '../utils/map_tile_defaults.dart';
 
 class OuterBoundaryDrawScreen extends StatefulWidget {
@@ -165,31 +166,13 @@ class _OuterBoundaryDrawScreenState extends State<OuterBoundaryDrawScreen> {
   /// Expands every vertex outward from the centroid by [bufferMeters].
   List<LatLng> _applyBuffer(List<LatLng> ring, double bufferMeters) {
     if (ring.isEmpty || bufferMeters <= 0) return ring;
-    // Drop duplicate closing point for centroid computation.
-    final pts =
-        (ring.length >= 2 && _samePoint(ring.first, ring.last))
-            ? ring.sublist(0, ring.length - 1)
-            : ring;
-    if (pts.isEmpty) return ring;
-    const metersPerDegLat = 111320.0;
-    final centLat =
-        pts.map((p) => p.latitude).reduce((a, b) => a + b) / pts.length;
-    final centLng =
-        pts.map((p) => p.longitude).reduce((a, b) => a + b) / pts.length;
-    final cosLat = math.cos(centLat * math.pi / 180);
-    final expanded = pts.map((p) {
-      final dLatM = (p.latitude - centLat) * metersPerDegLat;
-      final dLngM = (p.longitude - centLng) * metersPerDegLat * cosLat;
-      final dist = math.sqrt(dLatM * dLatM + dLngM * dLngM);
-      if (dist < 1e-6) return p;
-      final scale = (dist + bufferMeters) / dist;
-      return LatLng(
-        centLat + (p.latitude - centLat) * scale,
-        centLng + (p.longitude - centLng) * scale,
-      );
-    }).toList();
-    expanded.add(expanded.first); // re-close ring
-    return expanded;
+    final expanded = expandRingOutwardMeters(
+      [for (final point in ring) GeoPoint(point.latitude, point.longitude)],
+      bufferMeters,
+    );
+    return [
+      for (final point in expanded) LatLng(point.latitude, point.longitude),
+    ];
   }
 
   List<LatLng> _closedBoundary() {
@@ -651,31 +634,14 @@ class _BoxBoundaryDrawScreenState extends State<BoxBoundaryDrawScreen> {
   /// Expands each vertex outward from the centroid by [bufferMeters].
   List<LatLng> _applyBuffer(List<LatLng> ring, double bufferMeters) {
     if (ring.isEmpty || bufferMeters <= 0) return ring;
-    final pts = (ring.length >= 2 &&
-            (ring.first.latitude - ring.last.latitude).abs() < 1e-10 &&
-            (ring.first.longitude - ring.last.longitude).abs() < 1e-10)
-        ? ring.sublist(0, ring.length - 1)
-        : ring;
-    if (pts.isEmpty) return ring;
-    const metersPerDegLat = 111320.0;
-    final centLat =
-        pts.map((p) => p.latitude).reduce((a, b) => a + b) / pts.length;
-    final centLng =
-        pts.map((p) => p.longitude).reduce((a, b) => a + b) / pts.length;
-    final cosLat = math.cos(centLat * math.pi / 180);
-    final expanded = pts.map((p) {
-      final dLatM = (p.latitude - centLat) * metersPerDegLat;
-      final dLngM = (p.longitude - centLng) * metersPerDegLat * cosLat;
-      final dist = math.sqrt(dLatM * dLatM + dLngM * dLngM);
-      if (dist < 1e-6) return p;
-      final scale = (dist + bufferMeters) / dist;
-      return LatLng(
-        centLat + (p.latitude - centLat) * scale,
-        centLng + (p.longitude - centLng) * scale,
-      );
-    }).toList();
-    expanded.add(expanded.first);
-    return expanded;
+    final expanded = expandRingOutwardMeters(
+      [for (final point in ring) GeoPoint(point.latitude, point.longitude)],
+      bufferMeters,
+      closingToleranceDegrees: 1e-10,
+    );
+    return [
+      for (final point in expanded) LatLng(point.latitude, point.longitude),
+    ];
   }
 
   Future<void> _saveBoundary() async {
